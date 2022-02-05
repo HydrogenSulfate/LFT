@@ -7,5 +7,7 @@ python3.7 -m torch.distributed.launch --nproc_per_node 2 train.py \
 --scale_factor 2 \
 --batch_size 1 \
 --global_batch_size 8 \
---amp
---data_name HCI_new
+--amp \
+--data_name HCI_new \
+--num_workers 4
+

@@ -100,12 +100,14 @@ def cal_metrics(args, label, out):
             for v in range(V):
                 PSNR[b, u, v] = metrics.peak_signal_noise_ratio(
                     label_rgb[b, u, :, v, :, :].numpy(),
-                    out_rgb[b, u, :, v, :, :].numpy())
+                    out_rgb[b, u, :, v, :, :].numpy()
+                )
                 SSIM[b, u, v] = metrics.structural_similarity(
                     label_rgb[b, u, :, v, :, :].numpy(),
                     out_rgb[b, u, :, v, :, :].numpy(),
                     gaussian_weights=True,
-                    multichannel=True)
+                    multichannel=True
+                )
 
     PSNR_mean = PSNR.sum() / np.sum(PSNR > 0)
     SSIM_mean = SSIM.sum() / np.sum(SSIM > 0)
