@@ -88,19 +88,25 @@ class TestSetDataLoader(Dataset):
             self.file_list.extend(tmp_list)
 
         self.item_num = len(self.file_list)
+        self.angRes = args.angRes
 
     def __getitem__(self, index):
         file_name = [self.dataset_dir + self.file_list[index]]
         with h5py.File(file_name[0], 'r') as hf:
             Lr_SAI_rgb = np.array(hf.get('Lr_SAI_rgb'))
             Hr_SAI_rgb = np.array(hf.get('Hr_SAI_rgb'))
-            Lr_SAI_rgb = np.transpose(Lr_SAI_rgb, (0, 2, 1))
-            Hr_SAI_rgb = np.transpose(Hr_SAI_rgb, (0, 2, 1))
+            Lr_SAI_rgb = np.transpose(Lr_SAI_rgb, (2, 1, 0))
+            Hr_SAI_rgb = np.transpose(Hr_SAI_rgb, (2, 1, 0))
+
+            H_hr, W_hr = label_SAI_rgb.shape[:2]
+            H_hr = H_hr // self.angRes
+            W_hr = W_hr // self.angRes
+            coord_hr = utils.make_coord([H_hr, W_hr]) # [H'W',2]
 
         Lr_SAI_rgb = ToTensor()(Lr_SAI_rgb.copy())
         Hr_SAI_rgb = ToTensor()(Hr_SAI_rgb.copy())
 
-        return Lr_SAI_rgb, Hr_SAI_rgb
+        return Lr_SAI_rgb, Hr_SAI_rgb, coord_hr
 
     def __len__(self):
         return self.item_num

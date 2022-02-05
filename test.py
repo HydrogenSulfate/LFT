@@ -76,17 +76,24 @@ def main(args):
 def test(test_loader, device, net):
     psnr_iter_test = []
     ssim_iter_test = []
-    for idx_iter, (Lr_SAI_y, Hr_SAI_y) in tqdm(enumerate(test_loader), total=len(test_loader), ncols=70):
-        Lr_SAI_y = Lr_SAI_y.squeeze().to(device)  # numU, numV, h*angRes, w*angRes
-        Hr_SAI_y = Hr_SAI_y.squeeze()
+    for idx_iter, (Lr_SAI_rgb, Hr_SAI_rgb, coord_hr) in tqdm(enumerate(test_loader), total=len(test_loader), ncols=70):
+        assert Lr_SAI_rgb.shape[0] == 1, f"batch size({Lr_SAI_rgb.shape[0]}) must be 1 when testing."
+        Lr_SAI_rgb = Lr_SAI_rgb.squeeze().to(device)  # [3, UH, VW]
+        Hr_SAI_rgb = Hr_SAI_rgb.squeeze()  # [3, UH', VW']
+        coord_hr = coord_hr.squeeze().to(device)  # [H'W', 2]
 
-        uh, vw = Lr_SAI_y.shape
-        h0, w0 = int(uh//args.angRes), int(vw//args.angRes)
+        n_colors, uh, vw = Lr_SAI_rgb.shape
+        h0, w0 = int(uh // args.angRes), int(vw // args.angRes)
 
-        subLFin = LFdivide(Lr_SAI_y, args.angRes, args.patch_size_for_test, args.stride_for_test)
-        numU, numV, H, W = subLFin.size()
-        subLFout = torch.zeros(numU, numV, args.angRes * args.patch_size_for_test * args.scale_factor,
-                               args.angRes * args.patch_size_for_test * args.scale_factor)
+        subLFin = LFdivide(Lr_SAI_rgb, args.angRes, args.patch_size_for_test, args.stride_for_test)
+        numU, numV, _, H, W = subLFin.size()
+        subLFout = torch.zeros(
+            numU,
+            numV,
+            n_colors,
+            args.angRes * args.patch_size_for_test * args.scale_factor,
+            args.angRes * args.patch_size_for_test * args.scale_factor
+        )
 
         for u in range(numU):
             for v in range(numV):
@@ -95,15 +102,23 @@ def test(test_loader, device, net):
                     net.eval()
                     torch.cuda.empty_cache()
                     out = net(tmp.to(device))
-                    subLFout[u:u+1, v:v+1, :, :] = out.squeeze()
+                    subLFout[u:u + 1, v:v + 1, :, :, :] = out.squeeze()
 
-        Sr_4D_y = LFintegrate(subLFout, args.angRes, args.patch_size_for_test * args.scale_factor,
-                              args.stride_for_test * args.scale_factor, h0 * args.scale_factor,
-                              w0 * args.scale_factor)
-        Sr_SAI_y = Sr_4D_y.permute(0, 2, 1, 3).reshape((h0 * args.angRes * args.scale_factor,
-                                                        w0 * args.angRes * args.scale_factor))
+        Sr_4D_rgb = LFintegrate(
+            subLFout,
+            args.angRes,
+            args.patch_size_for_test * args.scale_factor,
+            args.stride_for_test * args.scale_factor,
+            h0 * args.scale_factor,
+            w0 * args.scale_factor
+        )  # [angRes, angRes, n_colors, h0, w0] -> [U, h0, V, w0, 3]
+        Sr_SAI_rgb = Sr_4D_rgb.permute(2, 0, 3, 1, 4).reshape((
+            n_colors,
+            h0 * args.angRes * args.scale_factor,
+            w0 * args.angRes * args.scale_factor
+        ))  # [3, UH', VW']
 
-        psnr, ssim = cal_metrics(args, Hr_SAI_y, Sr_SAI_y)
+        psnr, ssim = cal_metrics(args, Hr_SAI_rgb, Sr_SAI_rgb)
         psnr_iter_test.append(psnr)
         ssim_iter_test.append(ssim)
         pass
