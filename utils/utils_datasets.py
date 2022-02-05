@@ -31,17 +31,25 @@ class TrainSetDataLoader(Dataset):
             self.file_list.extend(tmp_list)
 
         self.item_num = len(self.file_list)
+        self.angRes = args.angRes
 
     def __getitem__(self, index):
         file_name = [self.dataset_dir + self.file_list[index]]
         with h5py.File(file_name[0], 'r') as hf:
-            data_SAI_y = np.array(hf.get('Lr_SAI_y'))   # Lr_SAI_y
-            label_SAI_y = np.array(hf.get('Hr_SAI_y'))  # Hr_SAI_y
-            data_SAI_y, label_SAI_y = augmentation(data_SAI_y, label_SAI_y)
-            data_SAI_y = ToTensor()(data_SAI_y.copy())
-            label_SAI_y = ToTensor()(label_SAI_y.copy())
+            data_SAI_rgb = np.array(hf.get('Lr_SAI_rgb'))   # Lr_SAI_rgb
+            data_SAI_rgb = data_SAI_rgb.transpose(1, 2, 0) # [ah,aw,c]
+            label_SAI_rgb = np.array(hf.get('Hr_SAI_rgb'))  # Hr_SAI_rgb
+            label_SAI_rgb = label_SAI_rgb.transpose(1, 2, 0) # [ah,aw,c]
+            H_hr, W_hr = label_SAI_rgb.shape[:2]
+            H_hr = H_hr // self.angRes
+            W_hr = W_hr // self.angRes
 
-        return data_SAI_y, label_SAI_y
+            data_SAI_rgb, label_SAI_rgb = augmentation_rgb(data_SAI_rgb, label_SAI_rgb)
+            coord_hr = utils.make_coord([H_hr, W_hr]) # [H'W',2]
+            data_SAI_rgb = ToTensor()(data_SAI_rgb.copy())
+            label_SAI_rgb = ToTensor()(label_SAI_rgb.copy())
+
+        return data_SAI_rgb, label_SAI_rgb, coord_hr
 
     def __len__(self):
         return self.item_num
@@ -84,15 +92,15 @@ class TestSetDataLoader(Dataset):
     def __getitem__(self, index):
         file_name = [self.dataset_dir + self.file_list[index]]
         with h5py.File(file_name[0], 'r') as hf:
-            Lr_SAI_y = np.array(hf.get('Lr_SAI_y'))
-            Hr_SAI_y = np.array(hf.get('Hr_SAI_y'))
-            Lr_SAI_y = np.transpose(Lr_SAI_y, (1, 0))
-            Hr_SAI_y = np.transpose(Hr_SAI_y, (1, 0))
+            Lr_SAI_rgb = np.array(hf.get('Lr_SAI_rgb'))
+            Hr_SAI_rgb = np.array(hf.get('Hr_SAI_rgb'))
+            Lr_SAI_rgb = np.transpose(Lr_SAI_rgb, (0, 2, 1))
+            Hr_SAI_rgb = np.transpose(Hr_SAI_rgb, (0, 2, 1))
 
-        Lr_SAI_y = ToTensor()(Lr_SAI_y.copy())
-        Hr_SAI_y = ToTensor()(Hr_SAI_y.copy())
+        Lr_SAI_rgb = ToTensor()(Lr_SAI_rgb.copy())
+        Hr_SAI_rgb = ToTensor()(Hr_SAI_rgb.copy())
 
-        return Lr_SAI_y, Hr_SAI_y
+        return Lr_SAI_rgb, Hr_SAI_rgb
 
     def __len__(self):
         return self.item_num
@@ -121,4 +129,16 @@ def augmentation(data, label):
     if random.random() < 0.5:  # transpose between U-V and H-W
         data = data.transpose(1, 0)
         label = label.transpose(1, 0)
+    return data, label
+
+def augmentation_rgb(data, label):
+    if random.random() < 0.5:  # flip along W-V direction
+        data = data[:, ::-1, :]
+        label = label[:, ::-1, :]
+    if random.random() < 0.5:  # flip along H-U direction
+        data = data[::-1, :, :]
+        label = label[::-1, :, :]
+    if random.random() < 0.5:  # transpose between U-V and H-W
+        data = data.transpose(1, 0, 2)
+        label = label.transpose(1, 0, 2)
     return data, label

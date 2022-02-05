@@ -1,10 +1,13 @@
-from torch.utils.data import DataLoader
 import importlib
-from tqdm import tqdm
+from collections import OrderedDict
+
+import torch
 import torch.backends.cudnn as cudnn
+from torch.utils.data import DataLoader
+from tqdm import tqdm
+
 from utils.utils import *
 from utils.utils_datasets import MultiTestSetDataLoader
-from collections import OrderedDict
 
 
 def main(args):
@@ -16,8 +19,8 @@ def main(args):
 
     ''' CPU or Cuda '''
     torch.cuda.set_device(args.local_rank)
-    # device = torch.device("cuda", args.local_rank)
-    device = torch.device("cpu", args.local_rank)
+    device = torch.device("cuda", args.local_rank)
+    # device = torch.device("cpu", args.local_rank)
 
     ''' DATA TEST LOADING '''
     logger.log_string('\nLoad Test Dataset ...')

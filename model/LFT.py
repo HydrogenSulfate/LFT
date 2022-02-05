@@ -256,11 +256,11 @@ def interpolate(x, angRes, scale_factor, mode):
     [B, _, H, W] = x.size()
     h = H // angRes
     w = W // angRes
-    x_upscale = x.view(B, 1, angRes, h, angRes, w)
-    x_upscale = x_upscale.permute(0, 2, 4, 1, 3, 5).contiguous().view(B * angRes ** 2, 1, h, w)
+    x_upscale = x.view(B, 3, angRes, h, angRes, w)
+    x_upscale = x_upscale.permute(0, 2, 4, 1, 3, 5).contiguous().view(B * angRes ** 2, 3, h, w)
     x_upscale = F.interpolate(x_upscale, scale_factor=scale_factor, mode=mode, align_corners=False)
-    x_upscale = x_upscale.view(B, angRes, angRes, 1, h * scale_factor, w * scale_factor)
-    x_upscale = x_upscale.permute(0, 3, 1, 4, 2, 5).contiguous().view(B, 1, H * scale_factor, W * scale_factor)
+    x_upscale = x_upscale.view(B, angRes, angRes, 3, h * scale_factor, w * scale_factor)
+    x_upscale = x_upscale.permute(0, 3, 1, 4, 2, 5).contiguous().view(B, 3, H * scale_factor, W * scale_factor)
     # [B, 1, A*h*S, A*w*S]
 
     return x_upscale

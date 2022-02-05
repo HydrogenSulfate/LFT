@@ -7,6 +7,7 @@ import logging
 from option import args
 from einops import rearrange
 
+
 def get_logger(log_dir, args):
     ''' LOG '''
     logger = logging.getLogger(args.model_name)
@@ -68,19 +69,21 @@ def cal_metrics(args, label, out):
         out = out.permute((0, 1, 3, 2, 4)).unsqueeze(0)
 
     B, C, U, h, V, w = label.size()
-    label_y = label[:, 0, :, :, :, :].data.cpu()
-    out_y = out[:, 0, :, :, :, :].data.cpu()
+    label_rgb = label[:, :, :, :, :, :].data.cpu()
+    out_rgb = out[:, :, :, :, :, :].data.cpu()
 
+    label_rgb = rearrange(label_rgb, 'b c u h v w -> b u h v w c')
+    out_rgb = rearrange(out_rgb, 'b c u h v w -> b u h v w c')
     PSNR = np.zeros(shape=(B, U, V), dtype='float32')
     SSIM = np.zeros(shape=(B, U, V), dtype='float32')
     for b in range(B):
         for u in range(U):
             for v in range(V):
-                PSNR[b, u, v] = metrics.peak_signal_noise_ratio(label_y[b, u, :, v, :].numpy(),
-                                                                out_y[b, u, :, v, :].numpy())
-                SSIM[b, u, v] = metrics.structural_similarity(label_y[b, u, :, v, :].numpy(),
-                                                              out_y[b, u, :, v, :].numpy(),
-                                                              gaussian_weights=True, )
+                PSNR[b, u, v] = metrics.peak_signal_noise_ratio(label_rgb[b, u, :, v, :, :].numpy(),
+                                                                out_rgb[b, u, :, v, :, :].numpy())
+                SSIM[b, u, v] = metrics.structural_similarity(label_rgb[b, u, :, v, :, :].numpy(),
+                                                              out_rgb[b, u, :, v, :, :].numpy(),
+                                                              gaussian_weights=True, multichannel=True)
 
     PSNR_mean = PSNR.sum() / np.sum(PSNR > 0)
     SSIM_mean = SSIM.sum() / np.sum(SSIM > 0)
@@ -166,6 +169,57 @@ def rgb2ycbcr(x):
 
     y = y / 255.0
     return y
+
+
+def SAI24D(x, angRes):
+    """
+    Input:
+        x: [B, C, AH, AW]
+    Return:
+        y: [B, A, A, C, h, w]
+    """
+    B, C, H, W = x.shape
+    h = H // angRes
+    w = W // angRes
+    y = torch.zeros([B, angRes, angRes, C, H, W], dtype=x.dtype)
+    for u in range(angRes):
+        for v in range(angRes):
+            y[:, u, v] = x[:, :, u * h:(u + 1) * h, v * w:(v + 1 * w)]
+    return y
+
+
+def SAI2Stack(x, angRes):
+    """
+    Input:
+        x: [B, C, AH, AW]
+    Return:
+        y: [B, AAC, h, w]
+    """
+    B, C, H, W = x.shape
+    y = rearrange(x, 'b c (a1 h) (a2 w) -> b c a1 h a2 w', a1=angRes, a2=angRes)
+    stack_list = []
+    for u in range(angRes):
+        for v in range(angRes):
+            stack_list.append(y[:, :, u, :, v, :]) # a1xa2.[b,c,h,w]
+    stack_list = torch.cat(stack_list, dim=1) # [b,a1a2c,h,w]
+
+
+def make_coord(shape, ranges=None, flatten=True):
+    """ Make coordinates at grid centers.
+    """
+    coord_seqs = []
+    for i, n in enumerate(shape):
+        if ranges is None:
+            v0, v1 = -1, 1
+        else:
+            v0, v1 = ranges[i]
+        r = (v1 - v0) / (2 * n)
+        seq = v0 + r + (2 * r) * torch.arange(n).float()
+        coord_seqs.append(seq)
+    ret = torch.stack(torch.meshgrid(*coord_seqs), dim=-1)
+    if flatten:
+        ret = ret.view(-1, ret.shape[-1])
+    return ret
 
 
 def ycbcr2rgb(x):
