@@ -158,6 +158,9 @@ def LFintegrate(subLF, angRes, pz, stride, h0, w0):
 
 
 def rgb2ycbcr(x):
+    """
+    x: [h, w, c(r,g,b)]
+    """
     y = np.zeros(x.shape, dtype='double')
     # y = 65.481 / 255. * x[:, :, 0] + 128.553 / 255. * x[:, :, 1] + 24.966 / 255. * x[:, :, 2] + 16 / 255
     y[:, :, 0] =  65.481 * x[:, :, 0] + 128.553 * x[:, :, 1] +  24.966 * x[:, :, 2] +  16.0
@@ -169,6 +172,9 @@ def rgb2ycbcr(x):
 
 
 def ycbcr2rgb(x):
+    """
+    x: [h, w, c(y,cb,cr)]
+    """
     mat = np.array(
         [[65.481, 128.553, 24.966],
          [-37.797, -74.203, 112.0],
