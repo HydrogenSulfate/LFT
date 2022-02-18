@@ -1,10 +1,14 @@
-from torch.utils.data import DataLoader
 import importlib
-from tqdm import tqdm
-import torch.backends.cudnn as cudnn
-from utils.utils import *
-from utils.utils_datasets import MultiTestSetDataLoader
 from collections import OrderedDict
+
+import numpy as np
+import torch
+import torch.backends.cudnn as cudnn
+from tqdm import tqdm
+
+from utils.utils import (LFdivide, LFintegrate, Logger, cal_metrics,
+                         create_dir, make_coord, rgb2ycbcr)
+from utils.utils_datasets import MultiTestSetDataLoader
 
 
 def main(args):
@@ -16,8 +20,8 @@ def main(args):
 
     ''' CPU or Cuda '''
     torch.cuda.set_device(args.local_rank)
-    # device = torch.device("cuda", args.local_rank)
-    device = torch.device("cpu", args.local_rank)
+    device = torch.device("cuda", args.local_rank)
+    # device = torch.device("cpu", args.local_rank)
 
     ''' DATA TEST LOADING '''
     logger.log_string('\nLoad Test Dataset ...')
@@ -33,7 +37,7 @@ def main(args):
     ''' load pre-trained pth '''
     ckpt_path = args.path_pre_pth
     checkpoint = torch.load(ckpt_path, map_location='cpu')
-    start_epoch = checkpoint['epoch']
+    # start_epoch = checkpoint['epoch']
     try:
         new_state_dict = OrderedDict()
         for k, v in checkpoint['state_dict'].items():
@@ -42,7 +46,8 @@ def main(args):
         # load params
         net.load_state_dict(new_state_dict)
         logger.log_string('Use pretrain model!')
-    except:
+    except Exception as e:
+        logger.log_string(str(e))
         new_state_dict = OrderedDict()
         for k, v in checkpoint['state_dict'].items():
             new_state_dict[k] = v
@@ -70,37 +75,59 @@ def main(args):
     pass
 
 
+@torch.no_grad()
 def test(test_loader, device, net):
     psnr_iter_test = []
     ssim_iter_test = []
-    for idx_iter, (Lr_SAI_y, Hr_SAI_y) in tqdm(enumerate(test_loader), total=len(test_loader), ncols=70):
-        Lr_SAI_y = Lr_SAI_y.squeeze().to(device)  # numU, numV, h*angRes, w*angRes
-        Hr_SAI_y = Hr_SAI_y.squeeze()
+    for idx_iter, data_batch in tqdm(enumerate(test_loader), total=len(test_loader), ncols=70):
+        # Lr_SAI_y = Lr_SAI_y.squeeze().to(device)  # numU, numV, h*angRes, w*angRes
+        # Hr_SAI_y = Hr_SAI_y.squeeze()
 
-        uh, vw = Lr_SAI_y.shape
-        h0, w0 = int(uh//args.angRes), int(vw//args.angRes)
+        data = data_batch['inp'].to(device)  # low resolution
+        label = data_batch['gt']  # high resolution
+        assert label.shape[0] == 1 and label.ndim == 4
+        # coord = data_batch['coord'].to(device)
+        # cell = data_batch['cell'].to(device)
 
-        subLFin = LFdivide(Lr_SAI_y, args.angRes, args.patch_size_for_test, args.stride_for_test)
-        numU, numV, H, W = subLFin.size()
-        subLFout = torch.zeros(numU, numV, args.angRes * args.patch_size_for_test * args.scale_factor,
+        data = data.squeeze(0)  # [3,uh,vw]
+        label = label.squeeze(0)  # [3,uh,vw]
+        label = rgb2ycbcr(label.permute(1, 2, 0).contiguous().numpy())[..., 0]  # y channel with [uh,vw] shape.
+        label = torch.from_numpy(label).cuda(args.local_rank)  # [uh,vw]
+        n_colors, uh, vw = data.shape
+
+        h0, w0 = int(uh // args.angRes), int(vw // args.angRes)
+
+        subLFin = LFdivide(data, args.angRes, args.patch_size_for_test, args.stride_for_test)
+        numU, numV, n_colors, H, W = subLFin.size()
+        subLFout = torch.zeros(numU, numV, n_colors, args.angRes * args.patch_size_for_test * args.scale_factor,
                                args.angRes * args.patch_size_for_test * args.scale_factor)
-
+        subLFin = subLFin.cuda(args.local_rank)
         for u in range(numU):
             for v in range(numV):
-                tmp = subLFin[u:u+1, v:v+1, :, :]
-                with torch.no_grad():
-                    net.eval()
-                    torch.cuda.empty_cache()
-                    out = net(tmp.to(device))
-                    subLFout[u:u+1, v:v+1, :, :] = out.squeeze()
+                tmp = subLFin[u:u + 1, v:v + 1, :, :, :]  # [1,1,3,uh,vw]
+                tmp = tmp.squeeze(0)
+                # with torch.no_grad():
+                net.eval()
+                # torch.cuda.empty_cache()
+                hr_coord = make_coord([(tmp.shape[-2] // args.angRes) * args.scale_factor, (tmp.shape[-1] // args.angRes) * args.scale_factor], flatten=False)  # [h',w',2]
+                hr_coord = hr_coord.unsqueeze(0)
+                hr_coord = hr_coord.to(device)
+                cell = torch.ones_like(hr_coord)
+                cell[:, 0] *= 2 / ((tmp.shape[-2] // args.angRes)*args.scale_factor)  # 一个cell的高
+                cell[:, 1] *= 2 / ((tmp.shape[-1] // args.angRes)*args.scale_factor)  # 一个cell的宽
+                cell = cell.to(device)
+                out = net(tmp, hr_coord, cell)
+                subLFout[u:u + 1, v:v + 1, :, :, :] = out.squeeze(0)
 
         Sr_4D_y = LFintegrate(subLFout, args.angRes, args.patch_size_for_test * args.scale_factor,
                               args.stride_for_test * args.scale_factor, h0 * args.scale_factor,
-                              w0 * args.scale_factor)
-        Sr_SAI_y = Sr_4D_y.permute(0, 2, 1, 3).reshape((h0 * args.angRes * args.scale_factor,
-                                                        w0 * args.angRes * args.scale_factor))
-
-        psnr, ssim = cal_metrics(args, Hr_SAI_y, Sr_SAI_y)
+                              w0 * args.scale_factor)  # [u,v,3,h,w]
+        Sr_SAI_y = Sr_4D_y.permute(0, 3, 1, 4, 2).reshape((h0 * args.angRes * args.scale_factor,
+                                                          w0 * args.angRes * args.scale_factor,
+                                                          n_colors))  # [uh,vw,3]
+        Sr_SAI_y = rgb2ycbcr(Sr_SAI_y.detach().numpy())[..., 0]  # [uh,vw]
+        Sr_SAI_y = torch.from_numpy(Sr_SAI_y).cuda(args.local_rank)
+        psnr, ssim = cal_metrics(args, label, Sr_SAI_y)
         psnr_iter_test.append(psnr)
         ssim_iter_test.append(ssim)
         pass

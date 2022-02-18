@@ -2,9 +2,11 @@
 export CUDA_VISIBLE_DEVICES=3
 
 python3.7 test.py \
---model_name LFT \
+--model_name LFTImp_gridsample \
 --angRes 5 \
 --scale_factor 2 \
+--feat_unfold \
+--cell_decode \
 --use_pre_pth True \
---path_for_test './data/LFSR_processed_y/data_for_test/' \
---path_pre_pth './log/SR_5x5_2x/LFT/HCI_new/checkpoints/LFT_5x5_2x_epoch_50_model.pth'
+--path_for_test './data/LFSR_processed_rgb/data_for_test/' \
+--path_pre_pth './log/SR_5x5_2x/LFTImp_gridsample/HCI_new/checkpoints/LFTImp_gridsample_5x5_2x_best_model.pth'

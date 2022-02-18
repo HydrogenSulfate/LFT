@@ -35,6 +35,12 @@ class get_model(nn.Module):
         ################ Alternate AngTrans & SpaTrans ################
         self.altblock = self.make_layer(layer_num=layer_num)
 
+        ################ Global Feature Fusion ################
+        self.gff = nn.Sequential(
+            nn.Conv2d(self.layer_num * channels, channels, 1, padding=0, stride=1),
+            nn.Conv2d(channels, channels, 3, padding=1, stride=1)
+        )
+
         ####################### UP Sampling ###########################
         self.upsampling = nn.Sequential(
             nn.Conv2d(channels, channels*self.factor ** 2, kernel_size=1, padding=0, dilation=1, bias=False),
@@ -73,6 +79,16 @@ class get_model(nn.Module):
             m.ang_position = ang_position
 
         # Alternate AngTrans & SpaTrans
+        layer_outputs = []
+
+        # buffer = self.altblock(buffer) + buffer
+        # Global Feature fusion
+        for i in range(len(self.altblock)):
+            buffer = self.altblock[i](buffer) + buffer
+            layer_outputs.append(buffer)
+
+        buffer = self.gff(buffer)
+
         buffer = self.altblock(buffer) + buffer
 
         # Up-Sampling
