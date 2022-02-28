@@ -63,7 +63,6 @@ class TrainSetDataLoader(Dataset):
             self.data_list = os.listdir(self.dataset_dir)
         else:
             self.data_list = [args.data_name]
-
         self.file_list = []
         for data_name in self.data_list:
             tmp_list = os.listdir(self.dataset_dir + data_name)

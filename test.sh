@@ -9,4 +9,4 @@ python3.7 test.py \
 --cell_decode \
 --use_pre_pth True \
 --path_for_test './data/LFSR_processed_rgb/data_for_test/' \
---path_pre_pth './log/SR_5x5_2x/LFTImp_gridsample/HCI_new/checkpoints/LFTImp_gridsample_5x5_2x_best_model.pth'
+--path_pre_pth './log/SR_5x5_2x/LFTImp_gridsample/ALL/checkpoints/LFTImp_gridsample_5x5_2x_best_model_37.32.pth'

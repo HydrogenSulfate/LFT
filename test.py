@@ -10,6 +10,8 @@ from utils.utils import (LFdivide, LFintegrate, Logger, cal_metrics,
                          create_dir, make_coord, rgb2ycbcr)
 from utils.utils_datasets import MultiTestSetDataLoader
 
+import cv2
+
 
 def main(args):
     ''' Create Dir for Save'''
@@ -64,8 +66,9 @@ def main(args):
         psnr_testset = []
         ssim_testset = []
         for index, test_name in enumerate(test_Names):
+            if test_name not in ['HCI_old', 'INRIA_Lytro']:
+                continue
             test_loader = test_Loaders[index]
-
             psnr_epoch_test, ssim_epoch_test = test(test_loader, device, net)
             psnr_testset.append(psnr_epoch_test)
             ssim_testset.append(ssim_epoch_test)
@@ -77,55 +80,60 @@ def main(args):
 
 @torch.no_grad()
 def test(test_loader, device, net):
+    net.eval()
+
     psnr_iter_test = []
     ssim_iter_test = []
-    for idx_iter, data_batch in tqdm(enumerate(test_loader), total=len(test_loader), ncols=70):
-        # Lr_SAI_y = Lr_SAI_y.squeeze().to(device)  # numU, numV, h*angRes, w*angRes
-        # Hr_SAI_y = Hr_SAI_y.squeeze()
 
-        data = data_batch['inp'].to(device)  # low resolution
+    for idx_iter, data_batch in tqdm(enumerate(test_loader), total=len(test_loader), ncols=70):
+
+        data = data_batch['inp']  # low resolution
         label = data_batch['gt']  # high resolution
         assert label.shape[0] == 1 and label.ndim == 4
-        # coord = data_batch['coord'].to(device)
-        # cell = data_batch['cell'].to(device)
-
         data = data.squeeze(0)  # [3,uh,vw]
         label = label.squeeze(0)  # [3,uh,vw]
         label = rgb2ycbcr(label.permute(1, 2, 0).contiguous().numpy())[..., 0]  # y channel with [uh,vw] shape.
         label = torch.from_numpy(label).cuda(args.local_rank)  # [uh,vw]
         n_colors, uh, vw = data.shape
 
-        h0, w0 = int(uh // args.angRes), int(vw // args.angRes)
+        h0, w0 = int(uh//args.angRes), int(vw//args.angRes)
 
         subLFin = LFdivide(data, args.angRes, args.patch_size_for_test, args.stride_for_test)
+        subLFin = subLFin.cuda(args.local_rank)
         numU, numV, n_colors, H, W = subLFin.size()
         subLFout = torch.zeros(numU, numV, n_colors, args.angRes * args.patch_size_for_test * args.scale_factor,
                                args.angRes * args.patch_size_for_test * args.scale_factor)
-        subLFin = subLFin.cuda(args.local_rank)
         for u in range(numU):
             for v in range(numV):
-                tmp = subLFin[u:u + 1, v:v + 1, :, :, :]  # [1,1,3,uh,vw]
+                tmp = subLFin[u:u+1, v:v+1, :, :, :]  # [1,1,3,uh,vw]
                 tmp = tmp.squeeze(0)
-                # with torch.no_grad():
-                net.eval()
-                # torch.cuda.empty_cache()
+
                 hr_coord = make_coord([(tmp.shape[-2] // args.angRes) * args.scale_factor, (tmp.shape[-1] // args.angRes) * args.scale_factor], flatten=False)  # [h',w',2]
                 hr_coord = hr_coord.unsqueeze(0)
                 hr_coord = hr_coord.to(device)
-                cell = torch.ones_like(hr_coord)
-                cell[:, 0] *= 2 / ((tmp.shape[-2] // args.angRes)*args.scale_factor)  # 一个cell的高
-                cell[:, 1] *= 2 / ((tmp.shape[-1] // args.angRes)*args.scale_factor)  # 一个cell的宽
-                cell = cell.to(device)
-                out = net(tmp, hr_coord, cell)
-                subLFout[u:u + 1, v:v + 1, :, :, :] = out.squeeze(0)
 
-        Sr_4D_y = LFintegrate(subLFout, args.angRes, args.patch_size_for_test * args.scale_factor,
+                cell = torch.ones_like(hr_coord)
+                cell[:, 0] *= 2 / ((tmp.shape[-2] // args.angRes) * args.scale_factor)  # 一个cell的高
+                cell[:, 1] *= 2 / ((tmp.shape[-1] // args.angRes) * args.scale_factor)  # 一个cell的宽
+                cell = cell.to(device)
+
+                out = net(tmp, hr_coord, cell)
+
+                subLFout[u:u+1, v:v+1, :, :, :] = out.squeeze(0)
+
+        Sr_4D_rgb = LFintegrate(subLFout, args.angRes, args.patch_size_for_test * args.scale_factor,
                               args.stride_for_test * args.scale_factor, h0 * args.scale_factor,
                               w0 * args.scale_factor)  # [u,v,3,h,w]
-        Sr_SAI_y = Sr_4D_y.permute(0, 3, 1, 4, 2).reshape((h0 * args.angRes * args.scale_factor,
+        Sr_SAI_rgb = Sr_4D_rgb.permute(0, 3, 1, 4, 2).reshape((h0 * args.angRes * args.scale_factor,
                                                           w0 * args.angRes * args.scale_factor,
                                                           n_colors))  # [uh,vw,3]
-        Sr_SAI_y = rgb2ycbcr(Sr_SAI_y.detach().numpy())[..., 0]  # [uh,vw]
+        Sr_SAI_rgb_uint8 = (Sr_SAI_rgb.detach().cpu().numpy() * 255.0).clip(0.0, 255.0).astype('uint8')
+
+        # save predicted SAI.
+        output_path = f"./Figs/{test_loader.dataset.file_list[idx_iter].replace('/', '_')}.png"
+        cv2.imwrite(output_path, Sr_SAI_rgb_uint8[..., ::-1])
+
+        Sr_SAI_y = rgb2ycbcr(Sr_SAI_rgb.detach().numpy())[..., 0]  # [uh,vw]
         Sr_SAI_y = torch.from_numpy(Sr_SAI_y).cuda(args.local_rank)
         psnr, ssim = cal_metrics(args, label, Sr_SAI_y)
         psnr_iter_test.append(psnr)
@@ -134,7 +142,7 @@ def test(test_loader, device, net):
 
     psnr_epoch_test = float(np.array(psnr_iter_test).mean())
     ssim_epoch_test = float(np.array(ssim_iter_test).mean())
-
+    torch.cuda.empty_cache()
     return psnr_epoch_test, ssim_epoch_test
 
 

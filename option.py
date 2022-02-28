@@ -2,7 +2,7 @@ import argparse
 
 parser = argparse.ArgumentParser()
 parser.add_argument("--angRes", type=int, default=5, help="angular resolution")
-parser.add_argument("--scale_factor", type=int, default=4, help="4, 2")
+parser.add_argument("--scale_factor", type=int, default=2, help="4, 2")
 parser.add_argument("--feat_unfold", action="store_true")
 parser.add_argument("--local_ensemble", action="store_true")
 parser.add_argument("--cell_decode", action="store_true")
@@ -14,6 +14,8 @@ parser.add_argument("--use_pre_pth", type=bool, default=False, help="use pre mod
 parser.add_argument("--path_pre_pth", type=str, default='./pth/LFT_5x5_4x_epoch_50_model.pth',
                     help="path for pre model ckpt")
 parser.add_argument('--data_name', type=str, default='ALL',
+                    help='EPFL, HCI_new, HCI_old, INRIA_Lytro, Stanford_Gantry, ALL')
+parser.add_argument('--test_data_name', type=str, default='ALL',
                     help='EPFL, HCI_new, HCI_old, INRIA_Lytro, Stanford_Gantry, ALL')
 parser.add_argument('--random_sample', type=bool, default=False)
 parser.add_argument('--path_for_train', type=str, default='./data/LFSR_processed_rgb/data_for_train/')

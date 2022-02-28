@@ -61,7 +61,8 @@ def main(args):
         net.apply(MODEL.weights_init)
         start_epoch = 0
         logger.log_string('Do not use pretrain model!')
-    elif dist.get_rank() == 0:
+    else:
+        # if dist.get_rank() == 0:
         try:
             ckpt_path = args.path_pre_pth
             checkpoint = torch.load(ckpt_path, map_location='cpu')
@@ -73,7 +74,7 @@ def main(args):
                     new_state_dict[name] = v
                 # load params
                 net.load_state_dict(new_state_dict)
-                logger.log_string('Use pretrain model!')
+                logger.log_string('resume training and load [1.model] state dict')
             except Exception as e:
                 logger.log_string(str(e))
                 new_state_dict = OrderedDict()
@@ -81,7 +82,7 @@ def main(args):
                     new_state_dict[k] = v
                 # load params
                 net.load_state_dict(new_state_dict)
-                logger.log_string('Use pretrain model!')
+                logger.log_string('resume training and load [1.model] state dict')
         except Exception as e:
             logger.log_string(str(e))
             net.apply(MODEL.weights_init)
@@ -89,6 +90,7 @@ def main(args):
             logger.log_string('No existing model, starting training from scratch...')
             pass
         pass
+        # pass
 
     local_rank = args.local_rank
     net = net.to(local_rank)
@@ -110,43 +112,32 @@ def main(args):
         eps=1e-08,
         weight_decay=args.decay_rate
     )
-
-    # no_wd_list = ['norm.weight', 'norm.bias']
-    # no_wd_params = [p for n, p in net.named_parameters() if p.requires_grad and any([key in n for key in no_wd_list])]
-    # no_wd_params_name = [n for n, p in net.named_parameters() if p.requires_grad and any([key in n for key in no_wd_list])]
-    # print("no_wd_params: {}".format(no_wd_params_name))
-    # res_params = [p for n, p in net.named_parameters() if p.requires_grad and not any([key in n for key in no_wd_list])]
-    # optimizer = torch.optim.AdamW(
-    #     [
-    #         {'params': no_wd_params, 'weight_decay': 0.0},
-    #         {'params': res_params}
-    #     ],
-    #     lr=args.lr,
-    #     betas=(0.9, 0.999),
-    #     eps=1e-08,
-    #     weight_decay=args.decay_rate
-    # )
+    if args.use_pre_pth:
+        logger.log_string('resume training and load [2.optimizer] state dict')
+        optimizer.load_state_dict(checkpoint['opt'])
 
     scheduler = torch.optim.lr_scheduler.StepLR(optimizer, step_size=args.n_steps, gamma=args.gamma)
-    # scheduler = WarmUpCosineAnnealingLR(
-    #     optimizer,
-    #     warm_multiplier=10,
-    #     warm_duration=5,
-    #     cos_duration=args.epoch-5
-    # )
+    if args.use_pre_pth:
+        logger.log_string("resume training and load [3.scheduler] state dict")
+        scheduler.load_state_dict(checkpoint['lr'])
 
     if args.amp:
         scaler = GradScaler()
+        if args.use_pre_pth:
+            scaler.load_state_dict(checkpoint['scaler'])
+            logger.log_string("resume training and load [4.scaler] state dict")
         logger.log_string("training with fp16 mode.")
     else:
         logger.log_string("training with fp32 mode.")
         scaler = None
 
     best_psnr = 0.0
-    test_dataset = TestSetDataLoader(args, data_name=args.data_name)
+    test_dataset = TestSetDataLoader(args, data_name=args.test_data_name)
     test_loader = DataLoader(dataset=test_dataset, num_workers=args.num_workers, batch_size=1, shuffle=False)
 
     ''' TRAINING '''
+    if args.use_pre_pth:
+        del checkpoint
     logger.log_string('\nStart training...')
     for idx_epoch in range(start_epoch, args.epoch):
         logger.log_string('\nEpoch %d /%s:' % (idx_epoch + 1, args.epoch))
@@ -161,8 +152,24 @@ def main(args):
         logger.log_string('The %dth Train, loss is: %.5f, psnr is %.5f, ssim is %.5f' %
                           (idx_epoch + 1, loss_epoch_train, psnr_epoch_train, ssim_epoch_train))
 
+        # save model at certain interval
+        if (idx_epoch + 1) % args.save_epoch == 0:
+            if local_rank == 0:
+                save_ckpt_path = str(checkpoints_dir) + '/%s_%dx%d_%dx_epoch_%02d_model.pth' % (
+                    args.model_name, args.angRes, args.angRes, args.scale_factor, idx_epoch + 1)
+                state = {
+                    'epoch': idx_epoch + 1,
+                    'state_dict': net.module.state_dict() if hasattr(net, 'module') else net.state_dict(),
+                    'opt': optimizer.state_dict(),
+                    'lr': scheduler.state_dict(),
+                }
+                if args.amp:
+                    state.update({'scaler': scaler.state_dict()})
+                torch.save(state, save_ckpt_path)
+                logger.log_string('Saving the epoch_%02d model at %s' % (idx_epoch + 1, save_ckpt_path))
+
         # valid model
-        if idx_epoch >= 40 and local_rank == 3:  # epoch达到一定轮数后再做test，否则一开始做test没意义
+        if local_rank == 3:  # epoch达到一定轮数后再做test，否则一开始做test没意义
             is_best = False
             psnr_epoch_test, ssim_epoch_test = test(test_loader, device, net)
             print('The %dth Valid, psnr is %.5f, ssim is %.5f' % (idx_epoch + 1, psnr_epoch_test, ssim_epoch_test))
@@ -175,29 +182,18 @@ def main(args):
                         args.model_name, args.angRes, args.angRes,
                         args.scale_factor)
                 state = {
-                    'epoch':
-                    idx_epoch + 1,
-                    'state_dict':
-                    net.module.state_dict()
-                    if hasattr(net, 'module') else net.state_dict(),
+                    'epoch': idx_epoch + 1,
+                    'state_dict': net.module.state_dict() if hasattr(net, 'module') else net.state_dict(),
+                    'opt': optimizer.state_dict(),
+                    'lr': scheduler.state_dict()
                 }
+                if args.amp:
+                    state.update({'scaler': scaler.state_dict()})
                 torch.save(state, save_ckpt_path)
                 print('Saving the best model at {}, (psnr ssim) {:.3f} {:.3f}'.format(save_ckpt_path, psnr_epoch_test, ssim_epoch_test))
             dist.barrier()
         else:
             dist.barrier()
-
-        # save model at certain interval
-        if (idx_epoch + 1) % args.save_epoch == 0:
-            if local_rank == 0:
-                save_ckpt_path = str(checkpoints_dir) + '/%s_%dx%d_%dx_epoch_%02d_model.pth' % (
-                    args.model_name, args.angRes, args.angRes, args.scale_factor, idx_epoch + 1)
-                state = {
-                    'epoch': idx_epoch + 1,
-                    'state_dict': net.module.state_dict() if hasattr(net, 'module') else net.state_dict(),
-                }
-                torch.save(state, save_ckpt_path)
-                logger.log_string('Saving the epoch_%02d model at %s' % (idx_epoch + 1, save_ckpt_path))
 
         ''' scheduler '''
         scheduler.step()
