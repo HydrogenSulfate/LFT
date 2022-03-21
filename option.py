@@ -2,7 +2,7 @@ import argparse
 
 parser = argparse.ArgumentParser()
 parser.add_argument("--angRes", type=int, default=5, help="angular resolution")
-parser.add_argument("--scale_factor", type=int, default=2, help="4, 2")
+parser.add_argument("--scale_factor", type=float, default=2, help="4, 2")
 parser.add_argument("--feat_unfold", action="store_true")
 parser.add_argument("--local_ensemble", action="store_true")
 parser.add_argument("--cell_decode", action="store_true")

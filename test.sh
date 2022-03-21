@@ -4,9 +4,13 @@ export CUDA_VISIBLE_DEVICES=3
 python3.7 test.py \
 --model_name LFTImp_gridsample \
 --angRes 5 \
---scale_factor 2 \
+--scale_factor 16 \
+--patch_size_for_test 16 \
+--stride_for_test 8 \
 --feat_unfold \
 --cell_decode \
+--data_name 'ALL' \
+--test_data_name 'INRIA_Lytro' \
 --use_pre_pth True \
 --path_for_test './data/LFSR_processed_rgb/data_for_test/' \
 --path_pre_pth './log/SR_5x5_2x/LFTImp_gridsample/ALL/checkpoints/LFTImp_gridsample_5x5_2x_best_model_37.32.pth'

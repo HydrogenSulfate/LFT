@@ -118,9 +118,10 @@ class TrainSetDataLoader(Dataset):
 def MultiTestSetDataLoader(args):
     # get testdataloader of every test dataset
     dataset_dir = args.path_for_test + 'SR_' + str(args.angRes) + 'x' + str(args.angRes) + '_' + \
-                  str(args.scale_factor) + 'x/'
+                  str(2) + 'x/'
     data_list = os.listdir(dataset_dir)
-
+    if args.test_data_name != 'ALL':
+        data_list = [data_name for data_name in data_list if data_name == args.test_data_name]
     test_Loaders = []
     length_of_tests = 0
     for data_name in data_list:
@@ -136,9 +137,53 @@ class TestSetDataLoader(Dataset):
     def __init__(self, args, data_name='ALL'):
         super(TestSetDataLoader, self).__init__()
         self.dataset_dir = args.path_for_test + 'SR_' + str(args.angRes) + 'x' + str(args.angRes) + '_' + \
+            str(2) + 'x/'
+        self.data_list = [data_name]
+        self.scale_factor = args.scale_factor
+        self.angRes = args.angRes
+        self.file_list = []
+        for data_name in self.data_list:
+            tmp_list = os.listdir(self.dataset_dir + data_name)
+            tmp_list = [name for name in tmp_list if name == 'Bee_1__Decoded.h5']
+            for index, _ in enumerate(tmp_list):
+                tmp_list[index] = data_name + '/' + tmp_list[index]
+            self.file_list.extend(tmp_list)
+
+        self.item_num = len(self.file_list)
+
+    def __getitem__(self, index):
+        file_name = [self.dataset_dir + self.file_list[index]]
+        with h5py.File(file_name[0], 'r') as hf:
+            data_SAI_rgb = np.array(hf.get('Lr_SAI_rgb')).transpose(2, 1, 0)  # [h,w,3]
+            label_SAI_rgb = np.array(hf.get('Hr_SAI_rgb')).transpose(2, 1, 0)  # [h',w',3]
+            data_SAI_rgb = ToTensor()(data_SAI_rgb.copy())  # [3,h,w]
+            label_SAI_rgb = ToTensor()(label_SAI_rgb.copy())  # [3,h',w']
+
+        # hr_coord = make_coord([
+        #     int(data_SAI_rgb.shape[-2] // self.angRes * self.scale_factor),
+        #     int(label_SAI_rgb.shape[-1] // self.angRes * self.scale_factor)],
+        #     flatten=False)  # [h',w',2]
+
+        # cell = torch.ones_like(hr_coord)
+        # cell[:, 0] *= 2 / label_SAI_rgb.shape[-2]  # 一个cell的高
+        # cell[:, 1] *= 2 / label_SAI_rgb.shape[-1]  # 一个cell的宽
+
+        return {
+            'inp': data_SAI_rgb,
+            'gt': label_SAI_rgb,
+        }
+
+    def __len__(self):
+        return self.item_num
+
+
+class InferSetDataLoader(Dataset):
+    def __init__(self, args, data_name='ALL'):
+        super(InferSetDataLoader, self).__init__()
+        self.dataset_dir = args.path_for_test + 'SR_' + str(args.angRes) + 'x' + str(args.angRes) + '_' + \
             str(args.scale_factor) + 'x/'
         self.data_list = [data_name]
-
+        self.scale_factor = args.scale_factor
         self.angRes = args.angRes
         self.file_list = []
         for data_name in self.data_list:
@@ -152,21 +197,23 @@ class TestSetDataLoader(Dataset):
 
     def __getitem__(self, index):
         file_name = [self.dataset_dir + self.file_list[index]]
-        with h5py.File(file_name[0], 'r') as hf:
-            data_SAI_rgb = np.array(hf.get('Lr_SAI_rgb')).transpose(2, 1, 0)  # [h,w,3]
-            label_SAI_rgb = np.array(hf.get('Hr_SAI_rgb')).transpose(2, 1, 0)  # [h',w',3]
-            data_SAI_rgb = ToTensor()(data_SAI_rgb.copy())  # [3,h,w]
-            label_SAI_rgb = ToTensor()(label_SAI_rgb.copy())  # [3,h',w']
+        data_SAI_rgb = np.load(file_name[0])  # [h,w,3]
+        data_SAI_rgb = ToTensor()(data_SAI_rgb.copy())  # [3,h,w]
 
-        hr_coord = make_coord([label_SAI_rgb.shape[-2] // self.angRes, label_SAI_rgb.shape[-1] // self.angRes], flatten=False)  # [h',w',2]
+        hr_coord = make_coord([
+            data_SAI_rgb.shape[-2] // self.angRes * self.scale_factor,
+            data_SAI_rgb.shape[-1] // self.angRes * self.scale_factor],
+            flatten=False
+        )  # [h',w',2]
 
         cell = torch.ones_like(hr_coord)
-        cell[:, 0] *= 2 / label_SAI_rgb.shape[-2]  # 一个cell的高
-        cell[:, 1] *= 2 / label_SAI_rgb.shape[-1]  # 一个cell的宽
+        cell[:, 0] *= 2 / (data_SAI_rgb.shape[-2] // self.angRes * self.scale_factor)  # 一个cell的高
+        cell[:, 1] *= 2 / (data_SAI_rgb.shape[-1] // self.angRes * self.scale_factor)  # 一个cell的宽
 
         return {
             'inp': data_SAI_rgb,
-            'gt': label_SAI_rgb,
+            'coord': hr_coord,
+            'cell': cell
         }
 
     def __len__(self):

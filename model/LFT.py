@@ -35,12 +35,6 @@ class get_model(nn.Module):
         ################ Alternate AngTrans & SpaTrans ################
         self.altblock = self.make_layer(layer_num=layer_num)
 
-        ################ Global Feature Fusion ################
-        self.gff = nn.Sequential(
-            nn.Conv2d(self.layer_num * channels, channels, 1, padding=0, stride=1),
-            nn.Conv2d(channels, channels, 3, padding=1, stride=1)
-        )
-
         ####################### UP Sampling ###########################
         self.upsampling = nn.Sequential(
             nn.Conv2d(channels, channels*self.factor ** 2, kernel_size=1, padding=0, dilation=1, bias=False),
@@ -79,16 +73,6 @@ class get_model(nn.Module):
             m.ang_position = ang_position
 
         # Alternate AngTrans & SpaTrans
-        layer_outputs = []
-
-        # buffer = self.altblock(buffer) + buffer
-        # Global Feature fusion
-        for i in range(len(self.altblock)):
-            buffer = self.altblock[i](buffer) + buffer
-            layer_outputs.append(buffer)
-
-        buffer = self.gff(buffer)
-
         buffer = self.altblock(buffer) + buffer
 
         # Up-Sampling
@@ -296,3 +280,22 @@ class get_loss(nn.Module):
 def weights_init(m):
 
     pass
+
+if __name__ == '__main__':
+    from ptflops import get_model_complexity_info
+
+    class args:
+        channels = 64
+        angRes = 5
+        scale_factor = 2
+    net = get_model(args()).cuda()
+    with torch.cuda.device(0):
+        macs, params = get_model_complexity_info(
+            model=net,
+            input_res=(1, 5*32, 5*32),
+            as_strings=True,
+            # input_constructor=prepare_input,
+        )
+        print('{:<30}  {:<8}'.format('Computational complexity: ', macs))
+        print('{:<30}  {:<8}'.format('Number of parameters: ', params))
+

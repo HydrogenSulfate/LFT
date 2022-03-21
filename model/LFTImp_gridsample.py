@@ -212,7 +212,7 @@ class get_model(nn.Module):
         # [h,w,2]->[2,h,w]->[1,1,1,2,h,w]->[B,u,v,2,h,w], 得到低分辨率的[-1,1]的spatial coord
         abs_coord_ang = make_coord([self.angRes, self.angRes], flatten=False).cuda() \
             .unsqueeze(0).unsqueeze(-1).unsqueeze(-1) \
-            .expand(feat.shape[0], self.angRes, self.angRes, 2, *[feat_batched.shape[-2]*self.factor, feat_batched.shape[-1]*self.factor]) \
+            .expand(feat.shape[0], self.angRes, self.angRes, 2, *[int(feat_batched.shape[-2]*self.factor), int(feat_batched.shape[-1]*self.factor)]) \
             .clone()
         # [u,v,2]->[1,u,v,2,1,1]->[B,u,v,2,h,w], 得到低分辨率的[-1,1]的angular coord
 
@@ -449,15 +449,41 @@ class AngTrans(nn.Module):
         return buffer
 
     def forward(self, buffer):
-        ang_token = self.SAI2Token(buffer)
+        ang_token = self.SAI2Token(buffer)  # [L=UV, N=BHW, C=C]
         ang_PE = self.SAI2Token(self.ang_position)
         ang_token_norm = self.norm(ang_token + ang_PE)
 
-        ang_token = self.attention(query=ang_token_norm,
+        attn_output = self.attention(query=ang_token_norm,
                                    key=ang_token_norm,
                                    value=ang_token,
-                                   need_weights=False)[0] + ang_token
+                                   need_weights=False)
+        # attn_output, attn_output_weights = self.attention(query=ang_token_norm,
+        #                            key=ang_token_norm,
+        #                            value=ang_token,
+        #                            need_weights=True)
+        ang_token = attn_output[0] + ang_token
 
+        # print(attn_output_weights.shape)  # 应该是[BHW,L,L]
+        # attn_output_weights = rearrange(attn_output_weights, '(b h w) l1 l2 -> b h w l1 l2', b=1, h=32, w=32)
+        # try:
+        #     import matplotlib.pyplot as plt
+        # except ImportError as e:
+        #     print(e)
+        # fig = plt.figure()
+        # i, j = 16, 16
+        # for u in range(self.angRes):
+        #     for v in range(self.angRes):
+        #         idx = u * self.angRes + v
+        #         ax = fig.add_subplot(self.angRes, self.angRes, idx+1)
+        #         # plt.subplot(self.angRes, self.angRes, idx + 1)
+        #         attn_map = attn_output_weights[0, i, j, idx]  # [25]
+        #         attn_map = attn_map.reshape([self.angRes, self.angRes])
+        #         attn_map = attn_map.cpu().numpy()
+        #         ax.axis('off')
+        #         ax.imshow(attn_map, cmap=plt.cm.jet)  # 设置cmap为RGB图
+        # # plt.colorbar()  # 显示色度条
+        # plt.savefig('attnention_map.png', bbox_inches='tight')
+        # exit(0)
         ang_token = self.feed_forward(ang_token) + ang_token
         buffer = self.Token2SAI(ang_token)
 

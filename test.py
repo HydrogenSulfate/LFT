@@ -12,6 +12,8 @@ from utils.utils_datasets import MultiTestSetDataLoader
 
 import cv2
 
+import os
+
 
 def main(args):
     ''' Create Dir for Save'''
@@ -36,6 +38,31 @@ def main(args):
     MODEL = importlib.import_module(MODEL_PATH)
     net = MODEL.get_model(args)
 
+    # num_params = 0
+    # for name, param in net.named_parameters():
+    #     if hasattr(param, 'shape'):
+    #         num_params += np.prod(list(param.shape))
+    # print("# of params is [{}]".format(num_params))
+    # net.cuda()
+    # from ptflops import get_model_complexity_info
+    # def prepare_input(resolution):
+    #     inp = torch.randn(1, 3, 5*32, 5*32).cuda()
+    #     cell = torch.randn(1, 64, 64, 2).cuda()
+    #     coord = torch.randn(1, 64, 64, 2).cuda()
+
+    #     return dict(inp=inp, coord=coord, cell=cell)
+    # with torch.cuda.device(0):
+    #     macs, params = get_model_complexity_info(
+    #         model=net,
+    #         input_res=(3, 224, 224),
+    #         as_strings=True,
+    #         input_constructor=prepare_input,
+    #     )
+    #     print('{:<30}  {:<8}'.format('Computational complexity: ', macs))
+    #     print('{:<30}  {:<8}'.format('Number of parameters: ', params))
+    # exit(0)
+
+    # exit(0)
     ''' load pre-trained pth '''
     ckpt_path = args.path_pre_pth
     checkpoint = torch.load(ckpt_path, map_location='cpu')
@@ -66,8 +93,6 @@ def main(args):
         psnr_testset = []
         ssim_testset = []
         for index, test_name in enumerate(test_Names):
-            if test_name not in ['HCI_old', 'INRIA_Lytro']:
-                continue
             test_loader = test_Loaders[index]
             psnr_epoch_test, ssim_epoch_test = test(test_loader, device, net)
             psnr_testset.append(psnr_epoch_test)
@@ -101,14 +126,19 @@ def test(test_loader, device, net):
         subLFin = LFdivide(data, args.angRes, args.patch_size_for_test, args.stride_for_test)
         subLFin = subLFin.cuda(args.local_rank)
         numU, numV, n_colors, H, W = subLFin.size()
-        subLFout = torch.zeros(numU, numV, n_colors, args.angRes * args.patch_size_for_test * args.scale_factor,
-                               args.angRes * args.patch_size_for_test * args.scale_factor)
+        # args.scale_factor = 1.5
+        subLFout = torch.zeros(numU, numV, n_colors, int(args.angRes * args.patch_size_for_test * args.scale_factor),
+                               int(args.angRes * args.patch_size_for_test * args.scale_factor))
         for u in range(numU):
             for v in range(numV):
                 tmp = subLFin[u:u+1, v:v+1, :, :, :]  # [1,1,3,uh,vw]
                 tmp = tmp.squeeze(0)
 
-                hr_coord = make_coord([(tmp.shape[-2] // args.angRes) * args.scale_factor, (tmp.shape[-1] // args.angRes) * args.scale_factor], flatten=False)  # [h',w',2]
+                hr_coord = make_coord(
+                    [int((tmp.shape[-2] // args.angRes) * args.scale_factor),
+                    int((tmp.shape[-1] // args.angRes) * args.scale_factor)],
+                    flatten=False
+                )  # [h',w',2]
                 hr_coord = hr_coord.unsqueeze(0)
                 hr_coord = hr_coord.to(device)
 
@@ -121,25 +151,32 @@ def test(test_loader, device, net):
 
                 subLFout[u:u+1, v:v+1, :, :, :] = out.squeeze(0)
 
-        Sr_4D_rgb = LFintegrate(subLFout, args.angRes, args.patch_size_for_test * args.scale_factor,
-                              args.stride_for_test * args.scale_factor, h0 * args.scale_factor,
-                              w0 * args.scale_factor)  # [u,v,3,h,w]
-        Sr_SAI_rgb = Sr_4D_rgb.permute(0, 3, 1, 4, 2).reshape((h0 * args.angRes * args.scale_factor,
-                                                          w0 * args.angRes * args.scale_factor,
+        Sr_4D_rgb = LFintegrate(
+            subLFout,
+            args.angRes,
+            int(args.patch_size_for_test * args.scale_factor),
+            int(args.stride_for_test * args.scale_factor),
+            int(h0 * args.scale_factor),
+            int(w0 * args.scale_factor)
+        )  # [u,v,3,h,w]
+        Sr_SAI_rgb = Sr_4D_rgb.permute(0, 3, 1, 4, 2).reshape((int(h0 * args.angRes * args.scale_factor),
+                                                          int(w0 * args.angRes * args.scale_factor),
                                                           n_colors))  # [uh,vw,3]
         Sr_SAI_rgb_uint8 = (Sr_SAI_rgb.detach().cpu().numpy() * 255.0).clip(0.0, 255.0).astype('uint8')
 
         # save predicted SAI.
-        output_path = f"./Figs/{test_loader.dataset.file_list[idx_iter].replace('/', '_')}.png"
+        os.makedirs(f"./Figs/SR_{args.scale_factor:.1f}x", exist_ok=True)
+        output_path = f"./Figs/SR_{args.scale_factor:.1f}x/{test_loader.dataset.file_list[idx_iter].replace('/', '_')}.png"
         cv2.imwrite(output_path, Sr_SAI_rgb_uint8[..., ::-1])
-
+        if args.scale_factor != 2:
+            continue
         Sr_SAI_y = rgb2ycbcr(Sr_SAI_rgb.detach().numpy())[..., 0]  # [uh,vw]
         Sr_SAI_y = torch.from_numpy(Sr_SAI_y).cuda(args.local_rank)
         psnr, ssim = cal_metrics(args, label, Sr_SAI_y)
         psnr_iter_test.append(psnr)
         ssim_iter_test.append(ssim)
         pass
-
+    # exit(0)
     psnr_epoch_test = float(np.array(psnr_iter_test).mean())
     ssim_epoch_test = float(np.array(ssim_iter_test).mean())
     torch.cuda.empty_cache()
