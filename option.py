@@ -14,8 +14,8 @@ parser.add_argument('--path_for_train', type=str, default='./data/LFSR_processed
 parser.add_argument('--path_for_test', type=str, default='./data/LFSR_processed_rgb/data_for_test/')
 parser.add_argument('--path_log', type=str, default='./log/')
 
-parser.add_argument('--patch_size_for_test', default=128, type=int, help='patch size')
-parser.add_argument('--stride_for_test', default=64, type=int, help='stride')
+parser.add_argument('--patch_size_for_test', default=256, type=int, help='patch size')
+parser.add_argument('--stride_for_test', default=128, type=int, help='stride')
 
 parser.add_argument('--global_batch_size', default=8, type=int, help='stride')
 parser.add_argument('--batch_size', type=int, default=1)

@@ -200,7 +200,10 @@ def main(args):
 
 
 @torch.no_grad()
-def test(test_loader: DataLoader, device: torch.device, net: torch.Module) -> Tuple[float, float]:
+def test(test_loader: DataLoader, device: torch.device, net: torch.nn.Module) -> Tuple[float, float]:
+    MODEL_PATH = 'model.' + args.model_name
+    MODEL = importlib.import_module(MODEL_PATH)
+    net = MODEL.get_model(args).cuda()
     net.eval()
 
     psnr_iter_test = []
@@ -209,17 +212,17 @@ def test(test_loader: DataLoader, device: torch.device, net: torch.Module) -> Tu
     for idx_iter, data_batch in tqdm(enumerate(test_loader), total=len(test_loader), ncols=70):
 
         pre: torch.Tensor = data_batch['pre'].to(device)      # low resolution
-        next: torch.Tensor = data_batch['nxt'].to(device)      # low resolution
+        nxt: torch.Tensor = data_batch['nxt'].to(device)      # low resolution
         label: torch.Tensor = data_batch['gt'].to(device)      # high resolution
 
         assert label.shape[0] == 1 and label.ndim == 4
 
         N, n_colors, uh, vw = label.shape
 
-        h0, w0 = int(uh//args.angRes_in), int(vw//args.angRes_in)
+        h0, w0 = int(uh//args.angRes_out), int(vw//args.angRes_out)
 
         subLFin_pre = LFdivide(pre, args.angRes_in, args.patch_size_for_test, args.stride_for_test)
-        subLFin_nxt = LFdivide(next, args.angRes_in, args.patch_size_for_test, args.stride_for_test)
+        subLFin_nxt = LFdivide(nxt, args.angRes_in, args.patch_size_for_test, args.stride_for_test)
         subLFin_pre = subLFin_pre.cuda(args.local_rank)
         subLFin_nxt = subLFin_nxt.cuda(args.local_rank)
         numU, numV, n_colors, H, W = subLFin_pre.size()
@@ -240,9 +243,10 @@ def test(test_loader: DataLoader, device: torch.device, net: torch.Module) -> Tu
                 tmp_nxt = tmp_nxt.squeeze(0)
 
                 out = net(tmp_pre, tmp_nxt)
+                print(f"input.shape: {tmp_pre.shape}, output.shape: {out.shape}")
 
                 subLFout[u:u+1, v:v+1, :, :, :] = out
-
+                print(f"inference patch: {u*numV+v}/{numU*numV}")
         Sr_4D_rgb = LFintegrate(
             subLFout,
             args.angRes_out,
@@ -251,10 +255,12 @@ def test(test_loader: DataLoader, device: torch.device, net: torch.Module) -> Tu
             h0,
             w0
         )  # [u,v,3,h,w]
-        Sr_SAI_rgb = Sr_4D_rgb.permute(0, 3, 1, 4, 2).reshape((h0 * args.angRes * args.scale_factor,
-                                                          w0 * args.angRes * args.scale_factor,
-                                                          n_colors))  # [uh,vw,3]
-        psnr, ssim = cal_metrics(args, label, Sr_SAI_rgb)
+        Sr_SAI_rgb = Sr_4D_rgb.permute(2, 0, 3, 1, 4).reshape(
+            n_colors,
+            h0 * args.angRes_out,
+            w0 * args.angRes_out
+        )  # [3, uh,vw]
+        psnr, ssim = cal_metrics(args.angRes_out, label, Sr_SAI_rgb)
         psnr_iter_test.append(psnr)
         ssim_iter_test.append(ssim)
         pass
@@ -331,3 +337,4 @@ if __name__ == '__main__':
     from option import args
 
     main(args)
+    # test(None, None, None)
