@@ -292,6 +292,19 @@ class ResidualGroup_dilated(nn.Module):
         return res
 
 
+class Dilated_Global_AvgPool2d(nn.Module):
+    def __init__(self, dilation):
+        super(Dilated_Global_AvgPool2d, self).__init__()
+        self.dw_shuffle = PixelShuffle(1 / dilation)
+        self.up_shuffle = PixelShuffle(dilation)
+        self.global_pool2d = nn.AdaptiveAvgPool2d(1)
+
+    def forward(self, x):
+        x_down = self.dw_shuffle(x)
+        x_down = self.global_pool2d(x_down)
+        return self.up_shuffle(x_down)
+
+
 class CALayer_dilated(nn.Module):
     def __init__(self, angRes, channel, reduction=16):
         super(CALayer_dilated, self).__init__()
