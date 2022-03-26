@@ -175,32 +175,23 @@ class Decoder(nn.Module):
         return out
 
 
-def LFInOutPaddings(x, an_in, an_out):
-    h, w = x.size(2) // an_in, x.size(3) // an_in
-    padding_width, padding_height = 0, 0
-    if w != ((w >> 6) << 6):
-        padding_width = (((w >> 6) + 1) << 6) - w
-    if h != ((h >> 6) << 6):
-        padding_height = (((h >> 6) + 1) << 6) - h
-    paddingInput = nn.Sequential(
-        PixelShuffle(1 / an_in),
-        nn.ReflectionPad2d(padding=[padding_width // 2, padding_width - padding_width // 2, padding_height // 2,
-                                    padding_height - padding_height // 2]),
-        PixelShuffle(an_in)
-    )
-    paddingOutput_lr = nn.Sequential(
-        PixelShuffle(1 / an_in),
-        nn.ReflectionPad2d(padding=[0 - padding_width // 2, padding_width // 2 - padding_width, 0 - padding_height // 2,
-                                    padding_height // 2 - padding_height]),
-        PixelShuffle(an_in)
-    )
-    paddingOutput_hr = nn.Sequential(
-        PixelShuffle(1 / an_out),
-        nn.ReflectionPad2d(padding=[0 - padding_width // 2, padding_width // 2 - padding_width, 0 - padding_height // 2,
-                                    padding_height // 2 - padding_height]),
-        PixelShuffle(an_out)
-    )
-    return paddingInput, paddingOutput_lr, paddingOutput_hr
+def pixel_shuffle(input, scale_factor):
+    batch_size, channels, in_height, in_width = input.size()  # [b,c,h,w]
+
+    out_channels = int(int(channels / scale_factor) / scale_factor)
+    out_height = int(in_height * scale_factor)
+    out_width = int(in_width * scale_factor)
+
+    if scale_factor >= 1:
+        input_view = input.contiguous().view(batch_size, out_channels, scale_factor, scale_factor, in_height, in_width)
+        shuffle_out = input_view.permute(0, 1, 4, 2, 5, 3).contiguous()
+    else:
+        block_size = int(1 / scale_factor)
+        input_view = input.contiguous().view(batch_size, channels, out_height, block_size, out_width, block_size)
+        #  [b,c,h,w]->[b,c,h',bh,w',bw]
+        shuffle_out = input_view.permute(0, 1, 3, 5, 2, 4).contiguous()  # [b,c,bh,bw,h',w']
+
+    return shuffle_out.view(batch_size, out_channels, out_height, out_width)  # [b,c*bh*bw,h',w']
 
 
 class PixelShuffle(nn.Module):
@@ -439,19 +430,19 @@ def weights_init(m):
 
 
 if __name__ == '__main__':
-    from ptflops import get_model_complexity_info
-
-    class args:
-        channels = 64
-        angRes = 5
-        scale_factor = 2
-    net = get_model(args()).cuda()
-    with torch.cuda.device(0):
-        macs, params = get_model_complexity_info(
-            model=net,
-            input_res=(1, 5*32, 5*32),
-            as_strings=True,
-            # input_constructor=prepare_input,
-        )
-        print('{:<30}  {:<8}'.format('Computational complexity: ', macs))
-        print('{:<30}  {:<8}'.format('Number of parameters: ', params))
+    from thop import profile
+    angRes_in = 3
+    angRes_out = 5
+    h = 128
+    w = 128
+    input_pre = torch.randn([1, 3, angRes_in * h, angRes_in * w]).cuda()
+    input_nxt = torch.randn([1, 3, angRes_in * h, angRes_in * w]).cuda()
+    # label = torch.randn([1, 3, angRes_out * h, angRes_out * w])
+    model = get_model({
+        "angRes_in": angRes_in,
+        "angRes_out": angRes_out
+    })
+    model = model.cuda()
+    total_ops, total_params = profile(model, (input_pre, input_nxt))
+    print('Number of parameters: %.2fM' % (total_params / 1e6))
+    print('Number of FLOPs: %.2fG' % (total_ops * 2 / 1e9))
