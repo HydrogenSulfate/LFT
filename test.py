@@ -38,31 +38,6 @@ def main(args):
     MODEL = importlib.import_module(MODEL_PATH)
     net = MODEL.get_model(args)
 
-    # num_params = 0
-    # for name, param in net.named_parameters():
-    #     if hasattr(param, 'shape'):
-    #         num_params += np.prod(list(param.shape))
-    # print("# of params is [{}]".format(num_params))
-    # net.cuda()
-    # from ptflops import get_model_complexity_info
-    # def prepare_input(resolution):
-    #     inp = torch.randn(1, 3, 5*32, 5*32).cuda()
-    #     cell = torch.randn(1, 64, 64, 2).cuda()
-    #     coord = torch.randn(1, 64, 64, 2).cuda()
-
-    #     return dict(inp=inp, coord=coord, cell=cell)
-    # with torch.cuda.device(0):
-    #     macs, params = get_model_complexity_info(
-    #         model=net,
-    #         input_res=(3, 224, 224),
-    #         as_strings=True,
-    #         input_constructor=prepare_input,
-    #     )
-    #     print('{:<30}  {:<8}'.format('Computational complexity: ', macs))
-    #     print('{:<30}  {:<8}'.format('Number of parameters: ', params))
-    # exit(0)
-
-    # exit(0)
     ''' load pre-trained pth '''
     ckpt_path = args.path_pre_pth
     checkpoint = torch.load(ckpt_path, map_location='cpu')
@@ -126,7 +101,6 @@ def test(test_loader, device, net):
         subLFin = LFdivide(data, args.angRes, args.patch_size_for_test, args.stride_for_test)
         subLFin = subLFin.cuda(args.local_rank)
         numU, numV, n_colors, H, W = subLFin.size()
-        # args.scale_factor = 1.5
         subLFout = torch.zeros(numU, numV, n_colors, int(args.angRes * args.patch_size_for_test * args.scale_factor),
                                int(args.angRes * args.patch_size_for_test * args.scale_factor))
         for u in range(numU):

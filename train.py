@@ -1,6 +1,6 @@
 import importlib
 from collections import OrderedDict
-# from contextlib import nullcontext
+from typing import Tuple
 
 import numpy as np
 import torch
@@ -62,7 +62,6 @@ def main(args):
         start_epoch = 0
         logger.log_string('Do not use pretrain model!')
     else:
-        # if dist.get_rank() == 0:
         try:
             ckpt_path = args.path_pre_pth
             checkpoint = torch.load(ckpt_path, map_location='cpu')
@@ -94,7 +93,8 @@ def main(args):
 
     local_rank = args.local_rank
     net = net.to(local_rank)
-    net = torch.nn.parallel.DistributedDataParallel(net, device_ids=[local_rank], output_device=local_rank)
+    if parallel:
+        net = torch.nn.parallel.DistributedDataParallel(net, device_ids=[local_rank], output_device=local_rank)
     cudnn.benchmark = True
 
     ''' Print Parameters '''
@@ -140,14 +140,14 @@ def main(args):
         del checkpoint
     logger.log_string('\nStart training...')
     for idx_epoch in range(start_epoch, args.epoch):
-        logger.log_string('\nEpoch %d /%s:' % (idx_epoch + 1, args.epoch))
+        logger.log_string('\n[Train] [Epoch %d /%s]:' % (idx_epoch + 1, args.epoch))
         net.train()
         if parallel:
             train_loader.sampler.set_epoch(idx_epoch)
 
         # train epoch
         loss_epoch_train, psnr_epoch_train, ssim_epoch_train = \
-            train(local_rank, train_loader, device, net, criterion, optimizer, scaler, iters_to_accumulate)
+            train_epoch(local_rank, train_loader, device, net, criterion, optimizer, scaler, iters_to_accumulate)
 
         logger.log_string('The %dth Train, loss is: %.5f, psnr is %.5f, ssim is %.5f' %
                           (idx_epoch + 1, loss_epoch_train, psnr_epoch_train, ssim_epoch_train))
@@ -155,8 +155,8 @@ def main(args):
         # save model at certain interval
         if (idx_epoch + 1) % args.save_epoch == 0:
             if local_rank == 0:
-                save_ckpt_path = str(checkpoints_dir) + '/%s_%dx%d_%dx_epoch_%02d_model.pth' % (
-                    args.model_name, args.angRes, args.angRes, args.scale_factor, idx_epoch + 1)
+                save_ckpt_path = str(checkpoints_dir) + '/%s_%d_%d_epoch_%02d_model.pth' % (
+                    args.model_name, args.angRes_in, args.angRes_out, idx_epoch + 1)
                 state = {
                     'epoch': idx_epoch + 1,
                     'state_dict': net.module.state_dict() if hasattr(net, 'module') else net.state_dict(),
@@ -169,7 +169,7 @@ def main(args):
                 logger.log_string('Saving the epoch_%02d model at %s' % (idx_epoch + 1, save_ckpt_path))
 
         # valid model
-        if local_rank == 3:  # epoch达到一定轮数后再做test，否则一开始做test没意义
+        if local_rank == 0:  # epoch达到一定轮数后再做test，否则一开始做test没意义
             is_best = False
             psnr_epoch_test, ssim_epoch_test = test(test_loader, device, net)
             print('The %dth Valid, psnr is %.5f, ssim is %.5f' % (idx_epoch + 1, psnr_epoch_test, ssim_epoch_test))
@@ -178,9 +178,7 @@ def main(args):
                 best_psnr = psnr_epoch_test
             if is_best:
                 save_ckpt_path = str(
-                    checkpoints_dir) + '/%s_%dx%d_%dx_best_model.pth' % (
-                        args.model_name, args.angRes, args.angRes,
-                        args.scale_factor)
+                    checkpoints_dir) + '/%s_%dx%d_best_model.pth' % (args.model_name, args.angRes_in, args.angRes_out)
                 state = {
                     'epoch': idx_epoch + 1,
                     'state_dict': net.module.state_dict() if hasattr(net, 'module') else net.state_dict(),
@@ -191,9 +189,11 @@ def main(args):
                     state.update({'scaler': scaler.state_dict()})
                 torch.save(state, save_ckpt_path)
                 print('Saving the best model at {}, (psnr ssim) {:.3f} {:.3f}'.format(save_ckpt_path, psnr_epoch_test, ssim_epoch_test))
-            dist.barrier()
+            if parallel:
+                dist.barrier()
         else:
-            dist.barrier()
+            if parallel:
+                dist.barrier()
 
         ''' scheduler '''
         scheduler.step()
@@ -202,7 +202,7 @@ def main(args):
 
 
 @torch.no_grad()
-def test(test_loader, device, net):
+def test(test_loader: DataLoader, device: torch.device, net: torch.Module) -> Tuple[float, float]:
     net.eval()
 
     psnr_iter_test = []
@@ -210,49 +210,53 @@ def test(test_loader, device, net):
 
     for idx_iter, data_batch in tqdm(enumerate(test_loader), total=len(test_loader), ncols=70):
 
-        data = data_batch['inp']  # low resolution
-        label = data_batch['gt']  # high resolution
+        pre: torch.Tensor = data_batch['pre'].to(device)      # low resolution
+        next: torch.Tensor = data_batch['nxt'].to(device)      # low resolution
+        label: torch.Tensor = data_batch['gt'].to(device)      # high resolution
+
         assert label.shape[0] == 1 and label.ndim == 4
-        data = data.squeeze(0)  # [3,uh,vw]
-        label = label.squeeze(0)  # [3,uh,vw]
-        label = rgb2ycbcr(label.permute(1, 2, 0).contiguous().numpy())[..., 0]  # y channel with [uh,vw] shape.
-        label = torch.from_numpy(label).cuda(args.local_rank)  # [uh,vw]
-        n_colors, uh, vw = data.shape
 
-        h0, w0 = int(uh//args.angRes), int(vw//args.angRes)
+        N, n_colors, uh, vw = label.shape
 
-        subLFin = LFdivide(data, args.angRes, args.patch_size_for_test, args.stride_for_test)
-        subLFin = subLFin.cuda(args.local_rank)
-        numU, numV, n_colors, H, W = subLFin.size()
-        subLFout = torch.zeros(numU, numV, n_colors, args.angRes * args.patch_size_for_test * args.scale_factor,
-                               args.angRes * args.patch_size_for_test * args.scale_factor)
+        h0, w0 = int(uh//args.angRes_in), int(vw//args.angRes_in)
+
+        subLFin_pre = LFdivide(pre, args.angRes_in, args.patch_size_for_test, args.stride_for_test)
+        subLFin_nxt = LFdivide(next, args.angRes_in, args.patch_size_for_test, args.stride_for_test)
+        subLFin_pre = subLFin_pre.cuda(args.local_rank)
+        subLFin_nxt = subLFin_nxt.cuda(args.local_rank)
+        numU, numV, n_colors, H, W = subLFin_pre.size()
+
+        subLFout = torch.zeros(
+            numU,
+            numV,
+            n_colors,
+            args.angRes_out * args.patch_size_for_test,
+            args.angRes_out * args.patch_size_for_test
+        )
         for u in range(numU):
             for v in range(numV):
-                tmp = subLFin[u:u+1, v:v+1, :, :, :]  # [1,1,3,uh,vw]
-                tmp = tmp.squeeze(0)
+                tmp_pre = subLFin_pre[u:u+1, v:v+1, :, :, :]  # [1,1,3,uh,vw]
+                tmp_pre = tmp_pre.squeeze(0)
 
-                hr_coord = make_coord([(tmp.shape[-2] // args.angRes) * args.scale_factor, (tmp.shape[-1] // args.angRes) * args.scale_factor], flatten=False)  # [h',w',2]
-                hr_coord = hr_coord.unsqueeze(0)
-                hr_coord = hr_coord.to(device)
+                tmp_nxt = subLFin_nxt[u:u+1, v:v+1, :, :, :]  # [1,1,3,uh,vw]
+                tmp_nxt = tmp_nxt.squeeze(0)
 
-                cell = torch.ones_like(hr_coord)
-                cell[:, 0] *= 2 / ((tmp.shape[-2] // args.angRes) * args.scale_factor)  # 一个cell的高
-                cell[:, 1] *= 2 / ((tmp.shape[-1] // args.angRes) * args.scale_factor)  # 一个cell的宽
-                cell = cell.to(device)
+                out = net(tmp_pre, tmp_nxt)
 
-                out = net(tmp, hr_coord, cell)
+                subLFout[u:u+1, v:v+1, :, :, :] = out
 
-                subLFout[u:u+1, v:v+1, :, :, :] = out.squeeze(0)
-
-        Sr_4D_y = LFintegrate(subLFout, args.angRes, args.patch_size_for_test * args.scale_factor,
-                              args.stride_for_test * args.scale_factor, h0 * args.scale_factor,
-                              w0 * args.scale_factor)  # [u,v,3,h,w]
-        Sr_SAI_y = Sr_4D_y.permute(0, 3, 1, 4, 2).reshape((h0 * args.angRes * args.scale_factor,
+        Sr_4D_rgb = LFintegrate(
+            subLFout,
+            args.angRes_out,
+            args.patch_size_for_test,
+            args.stride_for_test,
+            h0,
+            w0
+        )  # [u,v,3,h,w]
+        Sr_SAI_rgb = Sr_4D_rgb.permute(0, 3, 1, 4, 2).reshape((h0 * args.angRes * args.scale_factor,
                                                           w0 * args.angRes * args.scale_factor,
                                                           n_colors))  # [uh,vw,3]
-        Sr_SAI_y = rgb2ycbcr(Sr_SAI_y.detach().numpy())[..., 0]  # [uh,vw]
-        Sr_SAI_y = torch.from_numpy(Sr_SAI_y).cuda(args.local_rank)
-        psnr, ssim = cal_metrics(args, label, Sr_SAI_y)
+        psnr, ssim = cal_metrics(args, label, Sr_SAI_rgb)
         psnr_iter_test.append(psnr)
         ssim_iter_test.append(ssim)
         pass
@@ -263,7 +267,7 @@ def test(test_loader, device, net):
     return psnr_epoch_test, ssim_epoch_test
 
 
-def train(local_rank, train_loader, device, net, criterion, optimizer, scaler=None, iters_to_accumulate=1):
+def train_epoch(local_rank, train_loader, device, net, criterion, optimizer, scaler=None, iters_to_accumulate=1):
     '''training one epoch'''
     psnr_iter_train = []
     loss_iter_train = []
@@ -274,23 +278,19 @@ def train(local_rank, train_loader, device, net, criterion, optimizer, scaler=No
 
     for idx_iter, data_batch in tqdm(enumerate(train_loader), total=len(train_loader), ncols=70):
 
-        data = data_batch['inp'].to(device)      # low resolution
-        label = data_batch['gt'].to(device)    # high resolution
-        coord = data_batch['coord'].to(device)
-        cell = data_batch['cell'].to(device)
-
-        data = (data - 0.5) / 0.5  # 归一化到坐标值域的[-1,1]区间
-        label = (label - 0.5) / 0.5  # 归一化到坐标值域的[-1,1]区间
+        pre: torch.Tensor = data_batch['pre'].to(device)      # low resolution
+        next: torch.Tensor = data_batch['nxt'].to(device)      # low resolution
+        label: torch.Tensor = data_batch['gt'].to(device)      # high resolution
 
         # 计算loss
         # my_context = net.no_sync if (idx_iter + 1) % iters_to_accumulate != 0 else nullcontext
         # with my_context():
         if scaler is not None:
             with autocast():
-                out = net(data, coord, cell)
+                out = net(pre, next)
                 loss = criterion(out, label)
         else:
-            out = net(data, coord, cell)
+            out = net(pre, next)
             loss = criterion(out, label)
 
         # 梯度累加
@@ -313,7 +313,7 @@ def train(local_rank, train_loader, device, net, criterion, optimizer, scaler=No
             # 梯度归零
             optimizer.zero_grad()
 
-        loss_iter_train.append(loss.data.cpu())
+        loss_iter_train.append(loss.item())
         psnr, ssim = cal_metrics(args, label, out)
         psnr_iter_train.append(psnr)
         ssim_iter_train.append(ssim)

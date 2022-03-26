@@ -1,9 +1,9 @@
 # export CUDA_VISIBLE_DEVICES=0,1,2,3,4,5,6,7
 
-# 我的模型
-export CUDA_VISIBLE_DEVICES=0,1,2,3
-python3.7 -m torch.distributed.launch --nproc_per_node 4 train.py \
---model_name LFTImp_gridsample \
+# 我的模型LFATSRNet
+export CUDA_VISIBLE_DEVICES=0
+python3.7 train.py \
+--model_name LFATSRNet \
 --angRes 5 \
 --scale_factor 2 \
 --feat_unfold \

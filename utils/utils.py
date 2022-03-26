@@ -2,11 +2,11 @@ import logging
 import math
 import warnings
 from pathlib import Path
+from typing import List, Tuple
 
 import numpy as np
 import torch
 from einops import rearrange
-from option import args
 from skimage import metrics
 from torch.optim.lr_scheduler import CosineAnnealingLR
 
@@ -55,34 +55,36 @@ class Logger(object):
             print(string)
 
 
-def cal_metrics(args, label, out):
+def cal_metrics(angRes: int, label: torch.Tensor, out: torch.Tensor) -> Tuple[float, float]:
     if len(label.size()) == 2:
-        label = rearrange(label, '(a1 h) (a2 w) -> 1 1 a1 h a2 w', a1=args.angRes, a2=args.angRes)
-        out = rearrange(out, '(a1 h) (a2 w) -> 1 1 a1 h a2 w', a1=args.angRes, a2=args.angRes)
+        label = rearrange(label, '(a1 h) (a2 w) -> 1 1 a1 h a2 w', a1=angRes, a2=angRes)
+        out = rearrange(out, '(a1 h) (a2 w) -> 1 1 a1 h a2 w', a1=angRes, a2=angRes)
 
     if len(label.size()) == 4:
         [B, C, H, W] = label.size()
-        label = label.view((B, C, args.angRes, H // args.angRes, args.angRes, H // args.angRes))
-        out = out.view((B, C, args.angRes, H // args.angRes, args.angRes, W // args.angRes))
+        label = label.view((B, C, angRes, H // angRes, angRes, H // angRes))
+        out = out.view((B, C, angRes, H // angRes, angRes, W // angRes))
 
     if len(label.size()) == 5:
         label = label.permute((0, 1, 3, 2, 4)).unsqueeze(0)
         out = out.permute((0, 1, 3, 2, 4)).unsqueeze(0)
 
     B, C, U, h, V, w = label.size()
-    label_y = label[:, 0, :, :, :, :].data.cpu()
-    out_y = out[:, 0, :, :, :, :].data.cpu()
+    label_rgb = label.detach().cpu()
+    out_rgb = out.detach().cpu()
 
     PSNR = np.zeros(shape=(B, U, V), dtype='float32')
     SSIM = np.zeros(shape=(B, U, V), dtype='float32')
     for b in range(B):
         for u in range(U):
             for v in range(V):
-                PSNR[b, u, v] = metrics.peak_signal_noise_ratio(label_y[b, u, :, v, :].numpy(),
-                                                                out_y[b, u, :, v, :].numpy())
-                SSIM[b, u, v] = metrics.structural_similarity(label_y[b, u, :, v, :].numpy(),
-                                                              out_y[b, u, :, v, :].numpy(),
-                                                              gaussian_weights=True, multichannel=False)
+                PSNR[b, u, v] = metrics.peak_signal_noise_ratio(label_rgb[b, :, u, :, v, :].numpy().transpose(1, 2, 0),
+                                                                out_rgb[b, :, u, :, v, :].numpy().transpose(1, 2, 0))
+
+                SSIM[b, u, v] = metrics.structural_similarity(label_rgb[b, :, u, :, v, :].numpy().transpose(1, 2, 0),
+                                                              out_rgb[b, :, u, :, v, :].numpy().transpose(1, 2, 0),
+                                                              gaussian_weights=True,
+                                                              multichannel=True)
     if np.sum(PSNR > 0) == 0:
         PSNR_mean = 0.0
     else:
@@ -100,23 +102,23 @@ def LFdivide(data, angRes, patch_size, stride):
     h0 = uh // angRes  # 512
     w0 = vw // angRes  # 512
     bdr = (patch_size - stride) // 2  # 8
-    h = h0 + 2 * bdr  # 512+16=528
-    w = w0 + 2 * bdr  # 512+16=528
-    if (h - patch_size) % stride:  # 496%32=16
-        numU = (h - patch_size)//stride + 2  # 496//16+2=33
+    h = h0 + 2 * bdr  # 512+16=528，填充后的子光圈图像高度
+    w = w0 + 2 * bdr  # 512+16=528，填充后的子光圈图像宽度
+    if (h - patch_size) % stride:
+        numU = (h - patch_size)//stride + 2
     else:
-        numU = (h - patch_size)//stride + 1
+        numU = (h - patch_size)//stride + 1 # 32
     if (w - patch_size) % stride:
-        numV = (w - patch_size)//stride + 2   # 33
+        numV = (w - patch_size)//stride + 2
     else:
-        numV = (w - patch_size)//stride + 1
-    hE = stride * (numU - 1) + patch_size  # 544
-    wE = stride * (numV - 1) + patch_size  # 544
+        numV = (w - patch_size)//stride + 1 # 32
+    hE = stride * (numU - 1) + patch_size  # 528
+    wE = stride * (numV - 1) + patch_size  # 528
 
-    dataE = torch.zeros(n_colors, hE * angRes, wE * angRes)  # [3,544*5,544*5]
+    dataE = torch.zeros(n_colors, hE * angRes, wE * angRes)  # [3,528*5,528*5]
     for u in range(angRes):
         for v in range(angRes):
-            Im = data[:, u * h0:(u + 1) * h0, v * w0:(v + 1) * w0]  # 取子光圈图像[3,512,512]
+            Im = data[:, u * h0:(u + 1) * h0, v * w0:(v + 1) * w0]  # 遍历每一个子光圈图像[c,h,w]
             dataE[:, u * hE:u * hE + h, v * wE:v * wE + w] = ImageExtend(Im, bdr)
     subLF = torch.zeros(numU, numV, n_colors, patch_size * angRes, patch_size * angRes)
     for kh in range(numU):
@@ -130,7 +132,16 @@ def LFdivide(data, angRes, patch_size, stride):
     return subLF
 
 
-def ImageExtend(Im, bdr):
+def ImageExtend(Im: torch.Tensor, bdr: int) -> torch.Tensor:
+    """ReflectPad2d(im, bdr)，但是不共用边界
+
+    Args:
+        Im (torch.Tensor): 输入图像
+        bdr (int): 边界填充宽度
+
+    Returns:
+        torch.Tensor: xxx.
+    """
     n_colors, h, w = Im.shape  # 3,544,544
     Im_lr = torch.flip(Im, dims=[-1])  # [3,h,w]
     Im_ud = torch.flip(Im, dims=[-2])  # [3,h,w]
@@ -145,7 +156,7 @@ def ImageExtend(Im, bdr):
     return Im_out
 
 
-def LFintegrate(subLF, angRes, pz, stride, h0, w0):
+def LFintegrate(subLF: torch.Tensor, angRes: int, pz: int, stride: int, h0: int, w0: int) -> torch.Tensor:
     numU, numV, n_colors, pH, pW = subLF.shape
     # H, W = numU*pH, numV*pW
     ph, pw = pH // angRes, pW // angRes
@@ -288,3 +299,34 @@ class WarmUpCosineAnnealingLR(CosineAnnealingLR):
                 return [self.cos_eta_min + (base_lr - self.cos_eta_min) *
                     (1 + math.cos(math.pi * cos_last_epoch / self.cos_duration)) / 2
                     for base_lr in self.base_lrs]
+
+
+def MacPI2SAI(x, angRes):
+    out = []
+    for i in range(angRes):
+        out_h = []
+        for j in range(angRes):
+            out_h.append(x[:, :, i::angRes, j::angRes])
+        out.append(torch.cat(out_h, 3))
+    out = torch.cat(out, 2)
+    return out
+
+
+def SAI2MacPI(x, angRes):
+    b, c, hu, wv = x.shape
+    h, w = hu // angRes, wv // angRes
+    tempU = []
+    for i in range(h):
+        tempV = []
+        for j in range(w):
+            tempV.append(x[:, :, i::h, j::w])
+        tempU.append(torch.cat(tempV, dim=3))
+    out = torch.cat(tempU, dim=2)
+    return out
+
+
+if __name__ == '__main__':
+    a=5
+    h = w = 512
+    data = np.zeros([3, h*a, w*a])
+    x = LFdivide(data, a, 32, 16)
