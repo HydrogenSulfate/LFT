@@ -4,15 +4,11 @@ from collections import OrderedDict
 import numpy as np
 import torch
 import torch.backends.cudnn as cudnn
+from torch.utils.data import DataLoader
 from tqdm import tqdm
 
-from utils.utils import (LFdivide, LFintegrate, Logger, cal_metrics,
-                         create_dir, make_coord, rgb2ycbcr)
+from utils.utils import LFdivide, LFintegrate, Logger, cal_metrics, create_dir
 from utils.utils_datasets import MultiTestSetDataLoader
-
-import cv2
-
-import os
 
 
 def main(args):
@@ -79,7 +75,7 @@ def main(args):
 
 
 @torch.no_grad()
-def test(test_loader, device, net):
+def test(test_loader: DataLoader, device: torch.device, net: torch.Module) -> Tuple[float, float]:
     net.eval()
 
     psnr_iter_test = []
@@ -87,70 +83,57 @@ def test(test_loader, device, net):
 
     for idx_iter, data_batch in tqdm(enumerate(test_loader), total=len(test_loader), ncols=70):
 
-        data = data_batch['inp']  # low resolution
-        label = data_batch['gt']  # high resolution
+        pre: torch.Tensor = data_batch['pre'].to(device)      # low resolution
+        next: torch.Tensor = data_batch['nxt'].to(device)      # low resolution
+        label: torch.Tensor = data_batch['gt'].to(device)      # high resolution
+
         assert label.shape[0] == 1 and label.ndim == 4
-        data = data.squeeze(0)  # [3,uh,vw]
-        label = label.squeeze(0)  # [3,uh,vw]
-        label = rgb2ycbcr(label.permute(1, 2, 0).contiguous().numpy())[..., 0]  # y channel with [uh,vw] shape.
-        label = torch.from_numpy(label).cuda(args.local_rank)  # [uh,vw]
-        n_colors, uh, vw = data.shape
 
-        h0, w0 = int(uh//args.angRes), int(vw//args.angRes)
+        N, n_colors, uh, vw = label.shape
 
-        subLFin = LFdivide(data, args.angRes, args.patch_size_for_test, args.stride_for_test)
-        subLFin = subLFin.cuda(args.local_rank)
-        numU, numV, n_colors, H, W = subLFin.size()
-        subLFout = torch.zeros(numU, numV, n_colors, int(args.angRes * args.patch_size_for_test * args.scale_factor),
-                               int(args.angRes * args.patch_size_for_test * args.scale_factor))
+        h0, w0 = int(uh//args.angRes_in), int(vw//args.angRes_in)
+
+        subLFin_pre = LFdivide(pre, args.angRes_in, args.patch_size_for_test, args.stride_for_test)
+        subLFin_nxt = LFdivide(next, args.angRes_in, args.patch_size_for_test, args.stride_for_test)
+        subLFin_pre = subLFin_pre.cuda(args.local_rank)
+        subLFin_nxt = subLFin_nxt.cuda(args.local_rank)
+        numU, numV, n_colors, H, W = subLFin_pre.size()
+
+        subLFout = torch.zeros(
+            numU,
+            numV,
+            n_colors,
+            args.angRes_out * args.patch_size_for_test,
+            args.angRes_out * args.patch_size_for_test
+        )
         for u in range(numU):
             for v in range(numV):
-                tmp = subLFin[u:u+1, v:v+1, :, :, :]  # [1,1,3,uh,vw]
-                tmp = tmp.squeeze(0)
+                tmp_pre = subLFin_pre[u:u+1, v:v+1, :, :, :]  # [1,1,3,uh,vw]
+                tmp_pre = tmp_pre.squeeze(0)
 
-                hr_coord = make_coord(
-                    [int((tmp.shape[-2] // args.angRes) * args.scale_factor),
-                    int((tmp.shape[-1] // args.angRes) * args.scale_factor)],
-                    flatten=False
-                )  # [h',w',2]
-                hr_coord = hr_coord.unsqueeze(0)
-                hr_coord = hr_coord.to(device)
+                tmp_nxt = subLFin_nxt[u:u+1, v:v+1, :, :, :]  # [1,1,3,uh,vw]
+                tmp_nxt = tmp_nxt.squeeze(0)
 
-                cell = torch.ones_like(hr_coord)
-                cell[:, 0] *= 2 / ((tmp.shape[-2] // args.angRes) * args.scale_factor)  # 一个cell的高
-                cell[:, 1] *= 2 / ((tmp.shape[-1] // args.angRes) * args.scale_factor)  # 一个cell的宽
-                cell = cell.to(device)
+                out = net(tmp_pre, tmp_nxt)
 
-                out = net(tmp, hr_coord, cell)
-
-                subLFout[u:u+1, v:v+1, :, :, :] = out.squeeze(0)
+                subLFout[u:u+1, v:v+1, :, :, :] = out
 
         Sr_4D_rgb = LFintegrate(
             subLFout,
-            args.angRes,
-            int(args.patch_size_for_test * args.scale_factor),
-            int(args.stride_for_test * args.scale_factor),
-            int(h0 * args.scale_factor),
-            int(w0 * args.scale_factor)
+            args.angRes_out,
+            args.patch_size_for_test,
+            args.stride_for_test,
+            h0,
+            w0
         )  # [u,v,3,h,w]
-        Sr_SAI_rgb = Sr_4D_rgb.permute(0, 3, 1, 4, 2).reshape((int(h0 * args.angRes * args.scale_factor),
-                                                          int(w0 * args.angRes * args.scale_factor),
+        Sr_SAI_rgb = Sr_4D_rgb.permute(0, 3, 1, 4, 2).reshape((h0 * args.angRes * args.scale_factor,
+                                                          w0 * args.angRes * args.scale_factor,
                                                           n_colors))  # [uh,vw,3]
-        Sr_SAI_rgb_uint8 = (Sr_SAI_rgb.detach().cpu().numpy() * 255.0).clip(0.0, 255.0).astype('uint8')
-
-        # save predicted SAI.
-        os.makedirs(f"./Figs/SR_{args.scale_factor:.1f}x", exist_ok=True)
-        output_path = f"./Figs/SR_{args.scale_factor:.1f}x/{test_loader.dataset.file_list[idx_iter].replace('/', '_')}.png"
-        cv2.imwrite(output_path, Sr_SAI_rgb_uint8[..., ::-1])
-        if args.scale_factor != 2:
-            continue
-        Sr_SAI_y = rgb2ycbcr(Sr_SAI_rgb.detach().numpy())[..., 0]  # [uh,vw]
-        Sr_SAI_y = torch.from_numpy(Sr_SAI_y).cuda(args.local_rank)
-        psnr, ssim = cal_metrics(args, label, Sr_SAI_y)
+        psnr, ssim = cal_metrics(args, label, Sr_SAI_rgb)
         psnr_iter_test.append(psnr)
         ssim_iter_test.append(ssim)
         pass
-    # exit(0)
+
     psnr_epoch_test = float(np.array(psnr_iter_test).mean())
     ssim_epoch_test = float(np.array(ssim_iter_test).mean())
     torch.cuda.empty_cache()

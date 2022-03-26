@@ -10,9 +10,7 @@ from torch.cuda.amp import GradScaler, autocast
 from torch.utils.data import DataLoader
 from tqdm import tqdm
 
-from utils.utils import (LFdivide, LFintegrate, Logger,
-                         WarmUpCosineAnnealingLR, cal_metrics, create_dir,
-                         make_coord, rgb2ycbcr)
+from utils.utils import LFdivide, LFintegrate, Logger, cal_metrics, create_dir
 from utils.utils_datasets import TestSetDataLoader, TrainSetDataLoader
 
 
