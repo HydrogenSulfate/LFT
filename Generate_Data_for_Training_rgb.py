@@ -5,7 +5,7 @@ from pathlib import Path
 
 import cv2
 import h5py
-
+from skimage import metrics
 from utils.imresize import *
 
 
@@ -119,16 +119,30 @@ def main(args):
 
             (U, V, H, W, _) = LF_mid.shape
             (U0, V0, H, W, _) = LF_pre.shape
-            num_crops = ((H - patchsize + 1) // stride) * ((W - patchsize + 1) // stride)
-            # print(num_crops)
+            t = 0
+            effective_psnr = 25.0
             for h in range(0, H - patchsize + 1, stride):
                 for w in range(0, W - patchsize + 1, stride):
+                    t += 1
+                    # 只保留不相似（存在一定量运动像素）的crop patch，过滤简单样本。
+                    Lr_pre_crop_rgb_center = LF_pre[angRes_in//2, angRes_in//2, h: h + patchsize, w: w + patchsize,:]
+                    Lr_nxt_crop_rgb_center = LF_nxt[angRes_in//2, angRes_in//2, h: h + patchsize, w: w + patchsize,:]
+                    psnr = metrics.peak_signal_noise_ratio(Lr_pre_crop_rgb_center, Lr_nxt_crop_rgb_center)
+                    if psnr >= effective_psnr:
+                        print(f"psnr = [{psnr:.2f}], it is an simple sample, skip...")
+                        continue
                     idx_save = idx_save + 1
-                    # idx_scene_save = idx_scene_save + 1
                     Lr_pre_SAI_rgb = np.zeros((U0 * patchsize, V0 * patchsize, 3), dtype='single')
                     Hr_mid_SAI_rgb = np.zeros((U  * patchsize, V  * patchsize, 3), dtype='single')
                     Lr_nxt_SAI_rgb = np.zeros((U0 * patchsize, V0 * patchsize, 3), dtype='single')
                     crop_rc = np.array([h, w]).astype('int64')
+                    # process lr previous and next frame
+                    for u in range(U0):
+                        for v in range(V0):
+                            Lr_pre_crop_rgb = LF_pre[u, v, h: h + patchsize, w: w + patchsize,:]  # [h,w,c]
+                            Lr_nxt_crop_rgb = LF_nxt[u, v, h: h + patchsize, w: w + patchsize,:]  # [h,w,c]
+                            Lr_pre_SAI_rgb[u * patchsize : (u+1) * patchsize, v * patchsize: (v+1) * patchsize] = Lr_pre_crop_rgb
+                            Lr_nxt_SAI_rgb[u * patchsize : (u+1) * patchsize, v * patchsize: (v+1) * patchsize] = Lr_nxt_crop_rgb
                     # process Hr middle frame
                     for u in range(U):
                         for v in range(V):
@@ -136,17 +150,6 @@ def main(args):
                             Hr_mid_SAI_rgb[u * patchsize : (u+1) * patchsize, v * patchsize: (v+1) * patchsize] = Hr_mid_crop_rgb
                             pass
                         pass
-
-                    # process lr previous and next frame
-                    for u in range(U0):
-                        for v in range(V0):
-                            Lr_pre_crop_rgb = LF_pre[u, v, h: h + patchsize, w: w + patchsize,:]
-                            Lr_nxt_crop_rgb = LF_nxt[u, v, h: h + patchsize, w: w + patchsize,:]
-                            Lr_pre_SAI_rgb[u * patchsize : (u+1) * patchsize, v * patchsize: (v+1) * patchsize] = Lr_pre_crop_rgb
-                            Lr_nxt_SAI_rgb[u * patchsize : (u+1) * patchsize, v * patchsize: (v+1) * patchsize] = Lr_nxt_crop_rgb
-                            pass
-                        pass
-
                     # save
                     file_name = [str(sub_save_dir) + '/' + '%06d'%idx_save + '.h5']
                     with h5py.File(file_name[0], 'w') as hf:
@@ -156,10 +159,11 @@ def main(args):
                         hf.create_dataset('crop_r0c0', data=crop_rc, dtype='int')
                         hf.close()
                         pass
-                    exit(0)
                     pass
                 pass
-            print('(%d, %d, %d) training trpilet have been processed/n' % (t, t+time_step, t+2*time_step))
+            print('(%d, %d, %d) training trpilet have been processed' % (t, t+time_step, t+2*time_step))
+            print(f"saved [{idx_save}]/[{t}]")
+            # exit(0)
         pass
     pass
 
